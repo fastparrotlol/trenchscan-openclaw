@@ -366,11 +366,11 @@ export class TradingEngine {
       const signature = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 2 });
       await this.connection.confirmTransaction(signature, "confirmed");
 
-      this.api.log("info", `Bonding BUY tx: ${signature}`);
+      this.api.logger.info( `Bonding BUY tx: ${signature}`);
       return { success: true, signature, expectedAmount: Number(tokenAmount), mode: "bonding" };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      this.api.log("error", `Bonding BUY failed: ${msg}`);
+      this.api.logger.error( `Bonding BUY failed: ${msg}`);
       return { success: false, error: msg, mode: "bonding" };
     }
   }
@@ -457,11 +457,11 @@ export class TradingEngine {
       const signature = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 2 });
       await this.connection.confirmTransaction(signature, "confirmed");
 
-      this.api.log("info", `Bonding SELL tx: ${signature}`);
+      this.api.logger.info( `Bonding SELL tx: ${signature}`);
       return { success: true, signature, expectedAmount: Number(solOut) / 1e9, mode: "bonding" };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      this.api.log("error", `Bonding SELL failed: ${msg}`);
+      this.api.logger.error( `Bonding SELL failed: ${msg}`);
       return { success: false, error: msg, mode: "bonding" };
     }
   }
@@ -570,11 +570,11 @@ export class TradingEngine {
       const signature = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 2 });
       await this.connection.confirmTransaction(signature, "confirmed");
 
-      this.api.log("info", `AMM BUY tx: ${signature}`);
+      this.api.logger.info( `AMM BUY tx: ${signature}`);
       return { success: true, signature, expectedAmount: Number(baseOut), mode: "amm" };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      this.api.log("error", `AMM BUY failed: ${msg}`);
+      this.api.logger.error( `AMM BUY failed: ${msg}`);
       return { success: false, error: msg, mode: "amm" };
     }
   }
@@ -673,11 +673,11 @@ export class TradingEngine {
       const signature = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 2 });
       await this.connection.confirmTransaction(signature, "confirmed");
 
-      this.api.log("info", `AMM SELL tx: ${signature}`);
+      this.api.logger.info( `AMM SELL tx: ${signature}`);
       return { success: true, signature, expectedAmount: Number(quoteOut) / 1e9, mode: "amm" };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      this.api.log("error", `AMM SELL failed: ${msg}`);
+      this.api.logger.error( `AMM SELL failed: ${msg}`);
       return { success: false, error: msg, mode: "amm" };
     }
   }

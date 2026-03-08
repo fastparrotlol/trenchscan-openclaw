@@ -21,10 +21,10 @@ export class StrategyManager {
       if (fs.existsSync(this.strategiesPath)) {
         const raw = fs.readFileSync(this.strategiesPath, "utf-8");
         this.strategies = JSON.parse(raw) as Strategy[];
-        this.api.log("info", `Loaded ${this.strategies.length} strategies`);
+        this.api.logger.info( `Loaded ${this.strategies.length} strategies`);
       }
     } catch (e) {
-      this.api.log("warn", `Failed to load strategies: ${e instanceof Error ? e.message : e}`);
+      this.api.logger.warn( `Failed to load strategies: ${e instanceof Error ? e.message : e}`);
     }
   }
 
@@ -140,13 +140,13 @@ export class StrategyManager {
 
     // Daily SOL limit
     if (this.dailySolSpent + solAmount > limits.max_daily_sol) {
-      this.api.log("warn", `Strategy "${strategy.name}": daily SOL limit reached (${this.dailySolSpent}/${limits.max_daily_sol})`);
+      this.api.logger.warn( `Strategy "${strategy.name}": daily SOL limit reached (${this.dailySolSpent}/${limits.max_daily_sol})`);
       return false;
     }
 
     // Per-trade limit
     if (solAmount > limits.max_sol_per_trade) {
-      this.api.log("warn", `Strategy "${strategy.name}": trade exceeds max_sol_per_trade`);
+      this.api.logger.warn( `Strategy "${strategy.name}": trade exceeds max_sol_per_trade`);
       return false;
     }
 

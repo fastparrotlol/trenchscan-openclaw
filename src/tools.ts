@@ -1,10 +1,14 @@
-import type { PluginConfig, OpenClawPluginAPI } from "./types.js";
+import type { PluginConfig, OpenClawPluginAPI, ToolResult } from "./types.js";
 import {
   formatCheckToken, formatCheckBundle, formatCheckDeployer,
   formatKolTrades, formatMarketOverview, formatAssessRisk, formatDiscoverTokens,
 } from "./format.js";
 
-// ── API Helper ──────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────
+
+function textResult(text: string): ToolResult {
+  return { content: [{ type: "text", text }] };
+}
 
 async function apiCall(config: PluginConfig, path: string, params?: Record<string, string>): Promise<unknown> {
   const url = new URL(`${config.apiUrl}${path}`);
@@ -35,11 +39,15 @@ export function registerTools(api: OpenClawPluginAPI, config: PluginConfig): voi
     name: "check_token",
     description: "Get comprehensive data for a Solana token: price, market cap, volume, deployer score, bundles, KOL trades",
     parameters: {
-      mint: { type: "string", description: "Token mint address", required: true },
+      type: "object",
+      properties: {
+        mint: { type: "string", description: "Token mint address" },
+      },
+      required: ["mint"],
     },
-    async handler({ mint }) {
-      const data = await apiCall(config, `/api/v1/token/${mint}`);
-      return formatCheckToken(data);
+    async execute(_id, params) {
+      const data = await apiCall(config, `/api/v1/token/${params.mint}`);
+      return textResult(formatCheckToken(data));
     },
   });
 
@@ -48,11 +56,15 @@ export function registerTools(api: OpenClawPluginAPI, config: PluginConfig): voi
     name: "check_bundle",
     description: "Check if a token has coordinated bundle buys (sniping) and track their sell behavior",
     parameters: {
-      mint: { type: "string", description: "Token mint address", required: true },
+      type: "object",
+      properties: {
+        mint: { type: "string", description: "Token mint address" },
+      },
+      required: ["mint"],
     },
-    async handler({ mint }) {
-      const data = await apiCall(config, `/api/v1/bundles/${mint}`);
-      return formatCheckBundle(data);
+    async execute(_id, params) {
+      const data = await apiCall(config, `/api/v1/bundles/${params.mint}`);
+      return textResult(formatCheckBundle(data));
     },
   });
 
@@ -61,11 +73,15 @@ export function registerTools(api: OpenClawPluginAPI, config: PluginConfig): voi
     name: "check_deployer",
     description: "Check a deployer wallet's reputation: rug history, score, past token performance",
     parameters: {
-      wallet: { type: "string", description: "Deployer wallet address", required: true },
+      type: "object",
+      properties: {
+        wallet: { type: "string", description: "Deployer wallet address" },
+      },
+      required: ["wallet"],
     },
-    async handler({ wallet }) {
-      const data = await apiCall(config, `/api/v1/deployer/${wallet}`);
-      return formatCheckDeployer(data);
+    async execute(_id, params) {
+      const data = await apiCall(config, `/api/v1/deployer/${params.wallet}`);
+      return textResult(formatCheckDeployer(data));
     },
   });
 
@@ -74,18 +90,22 @@ export function registerTools(api: OpenClawPluginAPI, config: PluginConfig): voi
     name: "kol_trades",
     description: "Get KOL (Key Opinion Leader) trading activity: specific wallet trades or leaderboard rankings",
     parameters: {
-      wallet: { type: "string", description: "KOL wallet address. If omitted, returns leaderboard." },
-      period: { type: "string", description: "Time period: 1h, 6h, 24h, 7d, 30d", default: "24h" },
+      type: "object",
+      properties: {
+        wallet: { type: "string", description: "KOL wallet address. If omitted, returns leaderboard." },
+        period: { type: "string", description: "Time period: 1h, 6h, 24h, 7d, 30d", default: "24h" },
+      },
     },
-    async handler({ wallet, period }) {
+    async execute(_id, params) {
+      const { wallet, period } = params;
       if (wallet) {
         const data = await apiCall(config, `/api/v1/kol/${wallet}`);
-        return formatKolTrades(data, wallet as string);
+        return textResult(formatKolTrades(data, wallet as string));
       }
-      const params: Record<string, string> = {};
-      if (period) params.period = String(period);
-      const data = await apiCall(config, `/api/v1/kol/leaderboard`, params);
-      return formatKolTrades(data, undefined, period as string);
+      const queryParams: Record<string, string> = {};
+      if (period) queryParams.period = String(period);
+      const data = await apiCall(config, `/api/v1/kol/leaderboard`, queryParams);
+      return textResult(formatKolTrades(data, undefined, period as string));
     },
   });
 
@@ -93,10 +113,13 @@ export function registerTools(api: OpenClawPluginAPI, config: PluginConfig): voi
   api.registerTool({
     name: "market_overview",
     description: "Get current Solana pump.fun market statistics: SOL price, active tokens, volume, market caps",
-    parameters: {},
-    async handler() {
+    parameters: {
+      type: "object",
+      properties: {},
+    },
+    async execute(_id) {
       const data = await apiCall(config, `/api/v1/market`);
-      return formatMarketOverview(data);
+      return textResult(formatMarketOverview(data));
     },
   });
 
@@ -105,11 +128,15 @@ export function registerTools(api: OpenClawPluginAPI, config: PluginConfig): voi
     name: "assess_risk",
     description: "Get comprehensive risk assessment for a token: dev score, bundle behavior, market health → 0-100 risk score",
     parameters: {
-      mint: { type: "string", description: "Token mint address", required: true },
+      type: "object",
+      properties: {
+        mint: { type: "string", description: "Token mint address" },
+      },
+      required: ["mint"],
     },
-    async handler({ mint }) {
-      const data = await apiCall(config, `/api/v1/risk/${mint}`);
-      return formatAssessRisk(data);
+    async execute(_id, params) {
+      const data = await apiCall(config, `/api/v1/risk/${params.mint}`);
+      return textResult(formatAssessRisk(data));
     },
   });
 
@@ -118,23 +145,26 @@ export function registerTools(api: OpenClawPluginAPI, config: PluginConfig): voi
     name: "discover_tokens",
     description: "Discover and filter active Solana tokens by market cap, volume, KOL presence, bundles, bonding progress",
     parameters: {
-      min_mcap: { type: "number", description: "Minimum market cap in USD" },
-      max_mcap: { type: "number", description: "Maximum market cap in USD" },
-      has_kol: { type: "string", description: "Only tokens with KOL traders (true/false)", enum: ["true", "false"] },
-      has_bundle: { type: "string", description: "Only tokens with detected bundles (true/false)", enum: ["true", "false"] },
-      sort: { type: "string", description: "Sort by: mcap, volume, age, bonding", default: "mcap" },
-      limit: { type: "number", description: "Number of results (default: 20, max: 200)", default: 20 },
+      type: "object",
+      properties: {
+        min_mcap: { type: "number", description: "Minimum market cap in USD" },
+        max_mcap: { type: "number", description: "Maximum market cap in USD" },
+        has_kol: { type: "string", description: "Only tokens with KOL traders (true/false)", enum: ["true", "false"] },
+        has_bundle: { type: "string", description: "Only tokens with detected bundles (true/false)", enum: ["true", "false"] },
+        sort: { type: "string", description: "Sort by: mcap, volume, age, bonding", default: "mcap" },
+        limit: { type: "number", description: "Number of results (default: 20, max: 200)", default: 20 },
+      },
     },
-    async handler({ min_mcap, max_mcap, has_kol, has_bundle, sort, limit }) {
-      const params: Record<string, string> = {};
-      if (min_mcap !== undefined) params.min_mcap = String(min_mcap);
-      if (max_mcap !== undefined) params.max_mcap = String(max_mcap);
-      if (has_kol !== undefined) params.has_kol = String(has_kol);
-      if (has_bundle !== undefined) params.has_bundle = String(has_bundle);
-      if (sort) params.sort = String(sort);
-      params.limit = String(limit ?? 20);
-      const data = await apiCall(config, `/api/v1/tokens`, params);
-      return formatDiscoverTokens(data);
+    async execute(_id, params) {
+      const queryParams: Record<string, string> = {};
+      if (params.min_mcap !== undefined) queryParams.min_mcap = String(params.min_mcap);
+      if (params.max_mcap !== undefined) queryParams.max_mcap = String(params.max_mcap);
+      if (params.has_kol !== undefined) queryParams.has_kol = String(params.has_kol);
+      if (params.has_bundle !== undefined) queryParams.has_bundle = String(params.has_bundle);
+      if (params.sort) queryParams.sort = String(params.sort);
+      queryParams.limit = String(params.limit ?? 20);
+      const data = await apiCall(config, `/api/v1/tokens`, queryParams);
+      return textResult(formatDiscoverTokens(data));
     },
   });
 }

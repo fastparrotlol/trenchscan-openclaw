@@ -1,7 +1,11 @@
-import type { PluginConfig, OpenClawPluginAPI, Strategy } from "./types.js";
+import type { PluginConfig, OpenClawPluginAPI, Strategy, ToolResult } from "./types.js";
 import { WalletManager } from "./wallet.js";
 import { TradingEngine } from "./trading.js";
 import { StrategyManager } from "./strategy.js";
+
+function textResult(text: string): ToolResult {
+  return { content: [{ type: "text", text }] };
+}
 
 export function registerTradingTools(
   api: OpenClawPluginAPI,
@@ -16,12 +20,15 @@ export function registerTradingTools(
     name: "create_wallet",
     description: "Generate a new Solana wallet keypair for trading. Optionally encrypt with a password.",
     parameters: {
-      password: { type: "string", description: "Password to encrypt the private key (optional, recommended)" },
+      type: "object",
+      properties: {
+        password: { type: "string", description: "Password to encrypt the private key (optional, recommended)" },
+      },
     },
-    async handler({ password }) {
-      const address = walletManager.generate(password as string | undefined);
-      const encrypted = !!password;
-      return `Wallet created: ${address}\nEncrypted: ${encrypted}\n${encrypted ? "Use unlock_wallet with your password before trading." : "Ready to trade (fund with SOL first)."}`;
+    async execute(_id, params) {
+      const address = walletManager.generate(params.password as string | undefined);
+      const encrypted = !!params.password;
+      return textResult(`Wallet created: ${address}\nEncrypted: ${encrypted}\n${encrypted ? "Use unlock_wallet with your password before trading." : "Ready to trade (fund with SOL first)."}`);
     },
   });
 
@@ -30,11 +37,15 @@ export function registerTradingTools(
     name: "unlock_wallet",
     description: "Unlock an encrypted wallet with password. Required before trading if wallet was created with a password.",
     parameters: {
-      password: { type: "string", description: "Wallet encryption password", required: true },
+      type: "object",
+      properties: {
+        password: { type: "string", description: "Wallet encryption password" },
+      },
+      required: ["password"],
     },
-    async handler({ password }) {
-      const address = walletManager.unlock(password as string);
-      return `Wallet unlocked: ${address}\nReady to trade.`;
+    async execute(_id, params) {
+      const address = walletManager.unlock(params.password as string);
+      return textResult(`Wallet unlocked: ${address}\nReady to trade.`);
     },
   });
 
@@ -42,9 +53,12 @@ export function registerTradingTools(
   api.registerTool({
     name: "wallet_info",
     description: "Get wallet balance: SOL and all token holdings",
-    parameters: {},
-    async handler() {
-      if (!walletManager.isLoaded) return "No wallet found. Use create_wallet first.";
+    parameters: {
+      type: "object",
+      properties: {},
+    },
+    async execute() {
+      if (!walletManager.isLoaded) return textResult("No wallet found. Use create_wallet first.");
       const balance = await walletManager.getBalance();
       const lines = [`Wallet: ${walletManager.publicKey}`, `SOL: ${balance.sol.toFixed(6)}`];
       if (balance.tokens.length > 0) {
@@ -56,7 +70,7 @@ export function registerTradingTools(
       } else {
         lines.push("No token holdings.");
       }
-      return lines.join("\n");
+      return textResult(lines.join("\n"));
     },
   });
 
@@ -65,26 +79,30 @@ export function registerTradingTools(
     name: "buy_token",
     description: "Buy a pump.fun token with SOL. Auto-detects bonding curve vs AMM (post-migration).",
     parameters: {
-      mint: { type: "string", description: "Token mint address", required: true },
-      sol_amount: { type: "number", description: "SOL amount to spend", required: true },
-      slippage_bps: { type: "number", description: "Slippage in basis points (default: 500 = 5%)", default: 500 },
+      type: "object",
+      properties: {
+        mint: { type: "string", description: "Token mint address" },
+        sol_amount: { type: "number", description: "SOL amount to spend" },
+        slippage_bps: { type: "number", description: "Slippage in basis points (default: 500 = 5%)", default: 500 },
+      },
+      required: ["mint", "sol_amount"],
     },
-    async handler({ mint, sol_amount, slippage_bps }) {
-      if (!config.tradingEnabled) return "Trading is disabled. Set tradingEnabled: true in plugin config.";
-      if (!walletManager.isUnlocked) return "Wallet is locked. Use unlock_wallet first.";
+    async execute(_id, params) {
+      if (!config.tradingEnabled) return textResult("Trading is disabled. Set tradingEnabled: true in plugin config.");
+      if (!walletManager.isUnlocked) return textResult("Wallet is locked. Use unlock_wallet first.");
 
-      const solAmt = Number(sol_amount);
-      if (solAmt <= 0 || solAmt > 10) return "Invalid SOL amount (must be 0 < amount <= 10).";
+      const solAmt = Number(params.sol_amount);
+      if (solAmt <= 0 || solAmt > 10) return textResult("Invalid SOL amount (must be 0 < amount <= 10).");
 
       const keypair = walletManager.getKeypair();
       const result = await tradingEngine.buy(
-        mint as string, solAmt, keypair, Number(slippage_bps ?? 500),
+        params.mint as string, solAmt, keypair, Number(params.slippage_bps ?? 500),
       );
 
       if (result.success) {
-        return `BUY successful (${result.mode})\nMint: ${mint}\nSOL spent: ${solAmt}\nTx: ${result.signature}`;
+        return textResult(`BUY successful (${result.mode})\nMint: ${params.mint}\nSOL spent: ${solAmt}\nTx: ${result.signature}`);
       }
-      return `BUY failed (${result.mode}): ${result.error}`;
+      return textResult(`BUY failed (${result.mode}): ${result.error}`);
     },
   });
 
@@ -93,34 +111,37 @@ export function registerTradingTools(
     name: "sell_token",
     description: "Sell a pump.fun token. Specify percentage of your holdings to sell.",
     parameters: {
-      mint: { type: "string", description: "Token mint address", required: true },
-      percent: { type: "number", description: "Percentage to sell (1-100)", required: true },
-      slippage_bps: { type: "number", description: "Slippage in basis points (default: 500 = 5%)", default: 500 },
+      type: "object",
+      properties: {
+        mint: { type: "string", description: "Token mint address" },
+        percent: { type: "number", description: "Percentage to sell (1-100)" },
+        slippage_bps: { type: "number", description: "Slippage in basis points (default: 500 = 5%)", default: 500 },
+      },
+      required: ["mint", "percent"],
     },
-    async handler({ mint, percent, slippage_bps }) {
-      if (!config.tradingEnabled) return "Trading is disabled. Set tradingEnabled: true in plugin config.";
-      if (!walletManager.isUnlocked) return "Wallet is locked. Use unlock_wallet first.";
+    async execute(_id, params) {
+      if (!config.tradingEnabled) return textResult("Trading is disabled. Set tradingEnabled: true in plugin config.");
+      if (!walletManager.isUnlocked) return textResult("Wallet is locked. Use unlock_wallet first.");
 
-      const pct = Number(percent);
-      if (pct <= 0 || pct > 100) return "Invalid percent (must be 1-100).";
+      const pct = Number(params.percent);
+      if (pct <= 0 || pct > 100) return textResult("Invalid percent (must be 1-100).");
 
-      // Fetch token balance
       const balance = await walletManager.getBalance();
-      const token = balance.tokens.find((t) => t.mint === mint);
-      if (!token || token.amount === 0) return `No balance found for mint: ${mint}`;
+      const token = balance.tokens.find((t) => t.mint === params.mint);
+      if (!token || token.amount === 0) return textResult(`No balance found for mint: ${params.mint}`);
 
       const tokenAmount = Math.floor(token.amount * (pct / 100));
-      if (tokenAmount === 0) return "Token amount too small to sell.";
+      if (tokenAmount === 0) return textResult("Token amount too small to sell.");
 
       const keypair = walletManager.getKeypair();
       const result = await tradingEngine.sell(
-        mint as string, tokenAmount, keypair, Number(slippage_bps ?? 500),
+        params.mint as string, tokenAmount, keypair, Number(params.slippage_bps ?? 500),
       );
 
       if (result.success) {
-        return `SELL successful (${result.mode})\nMint: ${mint}\nSold: ${pct}% (${tokenAmount} raw)\nExpected SOL out: ~${result.expectedAmount?.toFixed(6) ?? "?"}\nTx: ${result.signature}`;
+        return textResult(`SELL successful (${result.mode})\nMint: ${params.mint}\nSold: ${pct}% (${tokenAmount} raw)\nExpected SOL out: ~${result.expectedAmount?.toFixed(6) ?? "?"}\nTx: ${result.signature}`);
       }
-      return `SELL failed (${result.mode}): ${result.error}`;
+      return textResult(`SELL failed (${result.mode}): ${result.error}`);
     },
   });
 
@@ -129,16 +150,20 @@ export function registerTradingTools(
     name: "set_strategy",
     description: "Create or update a trading strategy with entry/exit rules and execution mode (autonomous/confirm/alert)",
     parameters: {
-      name: { type: "string", description: "Strategy name", required: true },
-      rules: { type: "string", description: "Strategy JSON: {mode, entry: {trigger, conditions}, exit, limits}", required: true },
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Strategy name" },
+        rules: { type: "string", description: "Strategy JSON: {mode, entry: {trigger, conditions}, exit, limits}" },
+      },
+      required: ["name", "rules"],
     },
-    async handler({ name, rules }) {
-      if (!config.tradingEnabled) return "Trading is disabled. Set tradingEnabled: true in plugin config.";
+    async execute(_id, params) {
+      if (!config.tradingEnabled) return textResult("Trading is disabled. Set tradingEnabled: true in plugin config.");
 
       try {
-        const parsed = JSON.parse(rules as string);
+        const parsed = JSON.parse(params.rules as string);
         const strategy: Strategy = {
-          name: name as string,
+          name: params.name as string,
           active: parsed.active ?? true,
           mode: parsed.mode ?? "alert",
           entry: {
@@ -166,9 +191,9 @@ export function registerTradingTools(
         };
 
         strategyManager.save(strategy);
-        return `Strategy "${name}" saved.\nMode: ${strategy.mode}\nTrigger: ${strategy.entry.trigger}\nSOL/trade: ${strategy.entry.conditions.sol_amount}\nActive: ${strategy.active}`;
+        return textResult(`Strategy "${params.name}" saved.\nMode: ${strategy.mode}\nTrigger: ${strategy.entry.trigger}\nSOL/trade: ${strategy.entry.conditions.sol_amount}\nActive: ${strategy.active}`);
       } catch (e) {
-        return `Invalid strategy JSON: ${e instanceof Error ? e.message : e}`;
+        return textResult(`Invalid strategy JSON: ${e instanceof Error ? e.message : e}`);
       }
     },
   });
@@ -177,10 +202,13 @@ export function registerTradingTools(
   api.registerTool({
     name: "list_strategies",
     description: "List all trading strategies with their status and configuration",
-    parameters: {},
-    async handler() {
+    parameters: {
+      type: "object",
+      properties: {},
+    },
+    async execute() {
       const strategies = strategyManager.list();
-      if (strategies.length === 0) return "No strategies configured. Use set_strategy to create one.";
+      if (strategies.length === 0) return textResult("No strategies configured. Use set_strategy to create one.");
 
       const lines = [`Strategies (${strategies.length}):\n`];
       for (const s of strategies) {
@@ -194,7 +222,7 @@ export function registerTradingTools(
         if (s.exit.stop_loss_pct) lines.push(`  SL: -${s.exit.stop_loss_pct}%`);
         lines.push("");
       }
-      return lines.join("\n");
+      return textResult(lines.join("\n"));
     },
   });
 
@@ -203,11 +231,15 @@ export function registerTradingTools(
     name: "remove_strategy",
     description: "Remove a trading strategy by name",
     parameters: {
-      name: { type: "string", description: "Strategy name to remove", required: true },
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Strategy name to remove" },
+      },
+      required: ["name"],
     },
-    async handler({ name }) {
-      const removed = strategyManager.remove(name as string);
-      return removed ? `Strategy "${name}" removed.` : `Strategy "${name}" not found.`;
+    async execute(_id, params) {
+      const removed = strategyManager.remove(params.name as string);
+      return textResult(removed ? `Strategy "${params.name}" removed.` : `Strategy "${params.name}" not found.`);
     },
   });
 }

@@ -184,22 +184,29 @@ export const EVENT_PRIORITY: Record<WsEvent["type"], EventPriority> = {
 
 // ── OpenClaw Plugin API (minimal typing) ────────────────────────────
 
-export interface OpenClawPluginAPI {
-  registerTool(def: ToolDefinition): void;
-  log(level: "info" | "warn" | "error", msg: string): void;
+export interface ToolResult {
+  content: { type: "text"; text: string }[];
 }
 
 export interface ToolDefinition {
   name: string;
   description: string;
-  parameters: Record<string, ToolParam>;
-  handler(args: Record<string, unknown>): Promise<string>;
+  parameters: {
+    type: "object";
+    properties: Record<string, { type: string; description?: string; enum?: string[]; default?: unknown }>;
+    required?: string[];
+  };
+  execute(id: string, params: Record<string, unknown>): Promise<ToolResult>;
 }
 
-export interface ToolParam {
-  type: string;
-  description: string;
-  required?: boolean;
-  default?: unknown;
-  enum?: string[];
+export interface OpenClawPluginAPI {
+  registerTool(def: ToolDefinition, options?: { optional?: boolean }): void;
+  registerHook(name: string, handler: (...args: unknown[]) => unknown, metadata?: Record<string, unknown>): void;
+  on(event: string, handler: (...args: unknown[]) => void, options?: Record<string, unknown>): void;
+  config: Record<string, unknown>;
+  logger: {
+    info(msg: string, ...args: unknown[]): void;
+    warn(msg: string, ...args: unknown[]): void;
+    error(msg: string, ...args: unknown[]): void;
+  };
 }

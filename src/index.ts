@@ -11,10 +11,10 @@ import { StrategyManager } from "./strategy.js";
 
 let forwarder: EventForwarder | null = null;
 
-export function init(api: OpenClawPluginAPI, rawConfig: Record<string, unknown>): void {
-  const config = parseConfig(rawConfig);
+export default function register(api: OpenClawPluginAPI): void {
+  const config = parseConfig(api.config);
 
-  api.log("info", `TrenchScan plugin initializing (api: ${config.apiUrl}, channels: ${config.alertChannels.join(",")})`);
+  api.logger.info(`TrenchScan plugin initializing (api: ${config.apiUrl}, channels: ${config.alertChannels.join(",")})`);
 
   // Register 7 analysis tools
   registerTools(api, config);
@@ -32,7 +32,7 @@ export function init(api: OpenClawPluginAPI, rawConfig: Record<string, unknown>)
   registerTradingTools(api, config, walletManager, tradingEngine, strategyManager);
 
   if (config.tradingEnabled) {
-    api.log("info", "Trading module enabled");
+    api.logger.info("Trading module enabled");
   }
 
   // Start realtime event forwarding
@@ -40,14 +40,7 @@ export function init(api: OpenClawPluginAPI, rawConfig: Record<string, unknown>)
   forwarder.setTrading(strategyManager, tradingEngine, walletManager);
   forwarder.start();
 
-  api.log("info", "TrenchScan plugin ready (15 tools)");
-}
-
-export function unload(): void {
-  if (forwarder) {
-    forwarder.stop();
-    forwarder = null;
-  }
+  api.logger.info("TrenchScan plugin ready (15 tools)");
 }
 
 // ── Config Parsing ──────────────────────────────────────────────────

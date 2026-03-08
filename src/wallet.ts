@@ -35,10 +35,10 @@ export class WalletManager {
         if (!this.walletData.encrypted) {
           this.keypair = Keypair.fromSecretKey(bs58.decode(this.walletData.secretKey));
         }
-        this.api.log("info", `Wallet loaded: ${this.walletData.publicKey}`);
+        this.api.logger.info( `Wallet loaded: ${this.walletData.publicKey}`);
       }
     } catch (e) {
-      this.api.log("warn", `Failed to load wallet: ${e instanceof Error ? e.message : e}`);
+      this.api.logger.warn( `Failed to load wallet: ${e instanceof Error ? e.message : e}`);
     }
   }
 
@@ -99,7 +99,7 @@ export class WalletManager {
     }
 
     this.saveToDisk();
-    this.api.log("info", `Wallet generated: ${kp.publicKey.toBase58()}`);
+    this.api.logger.info( `Wallet generated: ${kp.publicKey.toBase58()}`);
     return kp.publicKey.toBase58();
   }
 
@@ -127,7 +127,7 @@ export class WalletManager {
       ]);
       const secretKeyB58 = decrypted.toString("utf8");
       this.keypair = Keypair.fromSecretKey(bs58.decode(secretKeyB58));
-      this.api.log("info", "Wallet unlocked");
+      this.api.logger.info( "Wallet unlocked");
       return this.walletData.publicKey;
     } catch {
       throw new Error("Wrong password or corrupted wallet file.");

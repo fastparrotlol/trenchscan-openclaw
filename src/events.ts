@@ -63,7 +63,7 @@ export class EventForwarder {
     this.ws = new WebSocket(url);
 
     this.ws.on("open", () => {
-      this.api.log("info", "WS connected to TrenchScan");
+      this.api.logger.info( "WS connected to TrenchScan");
       this.reconnectDelay = 1000;
       this.subscribe();
     });
@@ -78,12 +78,12 @@ export class EventForwarder {
     });
 
     this.ws.on("close", () => {
-      this.api.log("warn", "WS disconnected");
+      this.api.logger.warn( "WS disconnected");
       this.scheduleReconnect();
     });
 
     this.ws.on("error", (err: Error) => {
-      this.api.log("error", `WS error: ${err.message}`);
+      this.api.logger.error( `WS error: ${err.message}`);
       this.ws?.close();
     });
   }
@@ -107,7 +107,7 @@ export class EventForwarder {
   private scheduleReconnect(): void {
     if (this.destroyed) return;
     this.reconnectTimer = setTimeout(() => {
-      this.api.log("info", `WS reconnecting (delay: ${this.reconnectDelay}ms)`);
+      this.api.logger.info( `WS reconnecting (delay: ${this.reconnectDelay}ms)`);
       this.connect();
     }, this.reconnectDelay);
     this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
@@ -169,7 +169,7 @@ export class EventForwarder {
     switch (strategy.mode) {
       case "autonomous": {
         if (!this.tradingEngine || !this.walletManager?.isUnlocked) {
-          this.api.log("warn", `Strategy "${strategy.name}": wallet not unlocked, skipping autonomous trade`);
+          this.api.logger.warn( `Strategy "${strategy.name}": wallet not unlocked, skipping autonomous trade`);
           return;
         }
         const keypair = this.walletManager.getKeypair();
@@ -217,7 +217,7 @@ export class EventForwarder {
         body: JSON.stringify({ text, mode: "now" }),
       });
     } catch (e) {
-      this.api.log("error", `Hook /wake failed: ${e instanceof Error ? e.message : e}`);
+      this.api.logger.error( `Hook /wake failed: ${e instanceof Error ? e.message : e}`);
     }
   }
 
@@ -234,7 +234,7 @@ export class EventForwarder {
         body: JSON.stringify({ message, model: "openclaw:main" }),
       });
     } catch (e) {
-      this.api.log("error", `Hook /agent failed: ${e instanceof Error ? e.message : e}`);
+      this.api.logger.error( `Hook /agent failed: ${e instanceof Error ? e.message : e}`);
     }
   }
 }

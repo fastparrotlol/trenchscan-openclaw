@@ -1,8 +1,9 @@
 {
+  "id": "trenchscan",
   "name": "trenchscan",
   "version": "1.0.0",
   "description": "Solana pump.fun token scanner — tools for on-demand analysis + realtime KOL/bundle alerts",
-  "entry": "build/index.js",
+  "entry": "index.js",
   "configSchema": {
     "type": "object",
     "required": ["apiKey", "hookToken"],
