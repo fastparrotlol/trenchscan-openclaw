@@ -13,6 +13,9 @@ export interface PluginConfig {
   rpcUrl: string;
   dataDir: string;
   tradingEnabled: boolean;
+  feeWallet?: string;
+  feeBps?: number;
+  jitoTipLamports?: number;
 }
 
 export const DEFAULT_CONFIG: Omit<PluginConfig, "apiKey" | "hookToken"> = {

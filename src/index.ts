@@ -21,7 +21,11 @@ export function init(api: OpenClawPluginAPI, rawConfig: Record<string, unknown>)
 
   // Initialize trading modules if enabled
   const walletManager = new WalletManager(config.dataDir, config.rpcUrl, api);
-  const tradingEngine = new TradingEngine(config.rpcUrl, api);
+  const tradingEngine = new TradingEngine(config.rpcUrl, api, {
+    feeWallet: config.feeWallet,
+    feeBps: config.feeBps,
+    jitoTipLamports: config.jitoTipLamports,
+  });
   const strategyManager = new StrategyManager(config.dataDir, api);
 
   // Register 8 trading tools
@@ -72,5 +76,8 @@ function parseConfig(raw: Record<string, unknown>): PluginConfig {
     rpcUrl: typeof raw.rpcUrl === "string" ? raw.rpcUrl : DEFAULT_CONFIG.rpcUrl,
     dataDir: typeof raw.dataDir === "string" ? raw.dataDir : DEFAULT_CONFIG.dataDir,
     tradingEnabled: typeof raw.tradingEnabled === "boolean" ? raw.tradingEnabled : DEFAULT_CONFIG.tradingEnabled,
+    feeWallet: typeof raw.feeWallet === "string" ? raw.feeWallet : undefined,
+    feeBps: typeof raw.feeBps === "number" ? raw.feeBps : undefined,
+    jitoTipLamports: typeof raw.jitoTipLamports === "number" ? raw.jitoTipLamports : undefined,
   };
 }

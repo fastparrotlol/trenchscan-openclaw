@@ -65,6 +65,20 @@
         "type": "boolean",
         "default": false,
         "description": "Enable trading module (buy/sell/strategies)"
+      },
+      "feeWallet": {
+        "type": "string",
+        "description": "Platform fee recipient wallet address (default: TrenchScan fee wallet)"
+      },
+      "feeBps": {
+        "type": "number",
+        "default": 50,
+        "description": "Platform fee in basis points (default: 50 = 0.5%)"
+      },
+      "jitoTipLamports": {
+        "type": "number",
+        "default": 200000,
+        "description": "Jito MEV tip in lamports (default: 200000 = 0.0002 SOL)"
       }
     }
   }

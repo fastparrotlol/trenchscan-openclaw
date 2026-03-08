@@ -1,0 +1,7 @@
+src/
+tsconfig.json
+.gitignore
+.github/
+data/
+*.ts
+!*.d.ts

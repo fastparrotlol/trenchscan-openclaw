@@ -23,9 +23,10 @@ const PUMP_AMM_PROGRAM = new PublicKey("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMf
 const WSOL_MINT = new PublicKey("So11111111111111111111111111111111111111112");
 const FEE_PROGRAM = new PublicKey("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ");
 
-// ── Platform fee ──
-const FEE_WALLET = new PublicKey("7uLD9sc2JPmm4daKSHRABzwX3pvbVSUwagVt6EKGgxJb");
-const FEE_BPS = 50n;
+// ── Platform fee defaults ──
+const DEFAULT_FEE_WALLET = "7uLD9sc2JPmm4daKSHRABzwX3pvbVSUwagVt6EKGgxJb";
+const DEFAULT_FEE_BPS = 50;
+const DEFAULT_JITO_TIP_LAMPORTS = 200_000;
 
 // ── Jito tip ──
 const JITO_TIP_ACCOUNTS = [
@@ -40,7 +41,6 @@ const JITO_TIP_ACCOUNTS = [
   "4vieeGHPYPG2MmyPRcYjdiDmmhN3ww7hsFNap8pVN3Ey",
   "4TQLFNWK8AovT1gFvda5jfw2oJeRMKEmw7aH6MGBJ3or",
 ];
-const JITO_TIP_LAMPORTS = 200_000n;
 
 // ── Address Lookup Table ──
 const ALT_ADDRESS = new PublicKey("AEEC3HHR8nfZ7Ci2kEFM2ffawLKxQvaYRGU4fz9Ng6nt");
@@ -145,11 +145,11 @@ async function fetchBondingCurveData(bondingCurve: PublicKey, connection: Connec
   };
 }
 
-function jitoTipIx(payer: PublicKey): TransactionInstruction {
+function jitoTipIx(payer: PublicKey, tipLamports: bigint): TransactionInstruction {
   return SystemProgram.transfer({
     fromPubkey: payer,
     toPubkey: new PublicKey(JITO_TIP_ACCOUNTS[Math.floor(Math.random() * JITO_TIP_ACCOUNTS.length)]),
-    lamports: JITO_TIP_LAMPORTS,
+    lamports: tipLamports,
   });
 }
 
@@ -203,15 +203,28 @@ async function fetchProtocolFeeRecipient(connection: Connection): Promise<Public
 // TradingEngine
 // ══════════════════════════════════════════════════════════
 
+export interface TradingFeeConfig {
+  feeWallet?: string;
+  feeBps?: number;
+  jitoTipLamports?: number;
+}
+
 export class TradingEngine {
   private connection: Connection;
   private cachedALT: AddressLookupTableAccount | null = null;
+  private feeWallet: PublicKey;
+  private feeBps: bigint;
+  private jitoTipLamports: bigint;
 
   constructor(
     private rpcUrl: string,
     private api: OpenClawPluginAPI,
+    feeConfig?: TradingFeeConfig,
   ) {
     this.connection = new Connection(rpcUrl);
+    this.feeWallet = new PublicKey(feeConfig?.feeWallet ?? DEFAULT_FEE_WALLET);
+    this.feeBps = BigInt(feeConfig?.feeBps ?? DEFAULT_FEE_BPS);
+    this.jitoTipLamports = BigInt(feeConfig?.jitoTipLamports ?? DEFAULT_JITO_TIP_LAMPORTS);
   }
 
   private async getALT(): Promise<AddressLookupTableAccount[]> {
@@ -331,7 +344,7 @@ export class TradingEngine {
         data,
       });
 
-      const feeLamports = solLamports * FEE_BPS / 10000n;
+      const feeLamports = solLamports * this.feeBps / 10000n;
       const { blockhash } = await this.connection.getLatestBlockhash();
 
       const messageV0 = new TransactionMessage({
@@ -342,8 +355,8 @@ export class TradingEngine {
           ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 200_000 }),
           createAtaIdempotentIx(buyerPk, associatedUser, mintPk, mintTokenProgram),
           buyIx,
-          SystemProgram.transfer({ fromPubkey: buyerPk, toPubkey: FEE_WALLET, lamports: feeLamports }),
-          jitoTipIx(buyerPk),
+          SystemProgram.transfer({ fromPubkey: buyerPk, toPubkey: this.feeWallet, lamports: feeLamports }),
+          jitoTipIx(buyerPk, this.jitoTipLamports),
         ],
       }).compileToV0Message(lookupTables);
 
@@ -423,7 +436,7 @@ export class TradingEngine {
         data,
       });
 
-      const feeLamports = solOut * FEE_BPS / 10000n;
+      const feeLamports = solOut * this.feeBps / 10000n;
       const { blockhash } = await this.connection.getLatestBlockhash();
 
       const messageV0 = new TransactionMessage({
@@ -433,8 +446,8 @@ export class TradingEngine {
           ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
           ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 200_000 }),
           sellIx,
-          SystemProgram.transfer({ fromPubkey: sellerPk, toPubkey: FEE_WALLET, lamports: feeLamports }),
-          jitoTipIx(sellerPk),
+          SystemProgram.transfer({ fromPubkey: sellerPk, toPubkey: this.feeWallet, lamports: feeLamports }),
+          jitoTipIx(sellerPk, this.jitoTipLamports),
         ],
       }).compileToV0Message(lookupTables);
 
@@ -531,7 +544,7 @@ export class TradingEngine {
         data,
       });
 
-      const feeLamports = solLamports * FEE_BPS / 10000n;
+      const feeLamports = solLamports * this.feeBps / 10000n;
       const { blockhash } = await this.connection.getLatestBlockhash();
 
       const messageV0 = new TransactionMessage({
@@ -546,8 +559,8 @@ export class TradingEngine {
           syncNativeIx(userWsolAta),
           ammBuyIx,
           closeAccountIx(userWsolAta, userPk, userPk),
-          SystemProgram.transfer({ fromPubkey: userPk, toPubkey: FEE_WALLET, lamports: feeLamports }),
-          jitoTipIx(userPk),
+          SystemProgram.transfer({ fromPubkey: userPk, toPubkey: this.feeWallet, lamports: feeLamports }),
+          jitoTipIx(userPk, this.jitoTipLamports),
         ],
       }).compileToV0Message(lookupTables);
 
@@ -637,7 +650,7 @@ export class TradingEngine {
         data,
       });
 
-      const feeLamports = quoteOut * FEE_BPS / 10000n;
+      const feeLamports = quoteOut * this.feeBps / 10000n;
       const { blockhash } = await this.connection.getLatestBlockhash();
 
       const messageV0 = new TransactionMessage({
@@ -649,8 +662,8 @@ export class TradingEngine {
           createAtaIdempotentIx(userPk, userWsolAta, WSOL_MINT, TOKEN_PROGRAM_ID),
           ammSellIx,
           closeAccountIx(userWsolAta, userPk, userPk),
-          SystemProgram.transfer({ fromPubkey: userPk, toPubkey: FEE_WALLET, lamports: feeLamports }),
-          jitoTipIx(userPk),
+          SystemProgram.transfer({ fromPubkey: userPk, toPubkey: this.feeWallet, lamports: feeLamports }),
+          jitoTipIx(userPk, this.jitoTipLamports),
         ],
       }).compileToV0Message(lookupTables);
 
