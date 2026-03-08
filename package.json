@@ -1,0 +1,19 @@
+{
+  "name": "openclaw-trenchscan",
+  "version": "1.0.0",
+  "description": "OpenClaw plugin for TrenchScan — Solana token scanner with realtime alerts",
+  "type": "module",
+  "main": "build/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0",
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0"
+  }
+}

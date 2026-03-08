@@ -1,0 +1,56 @@
+{
+  "name": "trenchscan",
+  "version": "1.0.0",
+  "description": "Solana pump.fun token scanner — tools for on-demand analysis + realtime KOL/bundle alerts",
+  "entry": "build/index.js",
+  "configSchema": {
+    "type": "object",
+    "required": ["apiKey", "hookToken"],
+    "properties": {
+      "apiKey": {
+        "type": "string",
+        "description": "TrenchScan API key (tier: agent)"
+      },
+      "apiUrl": {
+        "type": "string",
+        "default": "https://trenchscan.lol",
+        "description": "REST API base URL"
+      },
+      "wsUrl": {
+        "type": "string",
+        "default": "wss://trenchscan.lol/api/v1/ws",
+        "description": "WebSocket URL"
+      },
+      "hookToken": {
+        "type": "string",
+        "description": "OpenClaw hook bearer token"
+      },
+      "hookBaseUrl": {
+        "type": "string",
+        "default": "http://localhost:3000",
+        "description": "OpenClaw gateway URL"
+      },
+      "alertChannels": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["kol_trades", "bundles"],
+        "description": "WS channels to subscribe for alerts"
+      },
+      "minMcap": {
+        "type": "number",
+        "default": 0,
+        "description": "Minimum market cap filter for token events"
+      },
+      "maxMcap": {
+        "type": "number",
+        "default": 0,
+        "description": "Maximum market cap filter (0 = no limit)"
+      },
+      "batchWindowSec": {
+        "type": "number",
+        "default": 30,
+        "description": "Batching window in seconds (0 = instant)"
+      }
+    }
+  }
+}
