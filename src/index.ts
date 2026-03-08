@@ -1,7 +1,11 @@
 import type { PluginConfig, OpenClawPluginAPI } from "./types.js";
 import { DEFAULT_CONFIG } from "./types.js";
 import { registerTools } from "./tools.js";
+import { registerTradingTools } from "./trading-tools.js";
 import { EventForwarder } from "./events.js";
+import { WalletManager } from "./wallet.js";
+import { TradingEngine } from "./trading.js";
+import { StrategyManager } from "./strategy.js";
 
 // ── Plugin Entry ────────────────────────────────────────────────────
 
@@ -15,11 +19,24 @@ export function init(api: OpenClawPluginAPI, rawConfig: Record<string, unknown>)
   // Register 7 analysis tools
   registerTools(api, config);
 
+  // Initialize trading modules if enabled
+  const walletManager = new WalletManager(config.dataDir, config.rpcUrl, api);
+  const tradingEngine = new TradingEngine(config.rpcUrl, api);
+  const strategyManager = new StrategyManager(config.dataDir, api);
+
+  // Register 8 trading tools
+  registerTradingTools(api, config, walletManager, tradingEngine, strategyManager);
+
+  if (config.tradingEnabled) {
+    api.log("info", "Trading module enabled");
+  }
+
   // Start realtime event forwarding
   forwarder = new EventForwarder(config, api);
+  forwarder.setTrading(strategyManager, tradingEngine, walletManager);
   forwarder.start();
 
-  api.log("info", "TrenchScan plugin ready");
+  api.log("info", "TrenchScan plugin ready (15 tools)");
 }
 
 export function unload(): void {
@@ -52,5 +69,8 @@ function parseConfig(raw: Record<string, unknown>): PluginConfig {
     minMcap: typeof raw.minMcap === "number" ? raw.minMcap : DEFAULT_CONFIG.minMcap,
     maxMcap: typeof raw.maxMcap === "number" ? raw.maxMcap : DEFAULT_CONFIG.maxMcap,
     batchWindowSec: typeof raw.batchWindowSec === "number" ? raw.batchWindowSec : DEFAULT_CONFIG.batchWindowSec,
+    rpcUrl: typeof raw.rpcUrl === "string" ? raw.rpcUrl : DEFAULT_CONFIG.rpcUrl,
+    dataDir: typeof raw.dataDir === "string" ? raw.dataDir : DEFAULT_CONFIG.dataDir,
+    tradingEnabled: typeof raw.tradingEnabled === "boolean" ? raw.tradingEnabled : DEFAULT_CONFIG.tradingEnabled,
   };
 }

@@ -50,6 +50,21 @@
         "type": "number",
         "default": 30,
         "description": "Batching window in seconds (0 = instant)"
+      },
+      "rpcUrl": {
+        "type": "string",
+        "default": "https://api.mainnet-beta.solana.com",
+        "description": "Solana RPC URL for trading transactions"
+      },
+      "dataDir": {
+        "type": "string",
+        "default": "./data",
+        "description": "Directory for wallet and strategy persistence"
+      },
+      "tradingEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable trading module (buy/sell/strategies)"
       }
     }
   }

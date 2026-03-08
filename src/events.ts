@@ -1,10 +1,13 @@
 import WebSocket from "ws";
-import type { PluginConfig, WsEvent, OpenClawPluginAPI } from "./types.js";
+import type { PluginConfig, WsEvent, StrategyAction, OpenClawPluginAPI } from "./types.js";
 import { EVENT_CHANNEL, EVENT_PRIORITY } from "./types.js";
 import {
   formatKolTrade, formatBundleDetected, formatBundleDumpAlert,
   formatTokenNew, formatSolPrice, formatBatchSummary,
 } from "./format.js";
+import type { StrategyManager } from "./strategy.js";
+import type { TradingEngine } from "./trading.js";
+import type { WalletManager } from "./wallet.js";
 
 // ── Event Forwarder ─────────────────────────────────────────────────
 
@@ -16,10 +19,20 @@ export class EventForwarder {
   private destroyed = false;
   private reconnectDelay = 1000;
 
+  private strategyManager: StrategyManager | null = null;
+  private tradingEngine: TradingEngine | null = null;
+  private walletManager: WalletManager | null = null;
+
   constructor(
     private config: PluginConfig,
     private api: OpenClawPluginAPI,
   ) {}
+
+  setTrading(strategyManager: StrategyManager, tradingEngine: TradingEngine, walletManager: WalletManager): void {
+    this.strategyManager = strategyManager;
+    this.tradingEngine = tradingEngine;
+    this.walletManager = walletManager;
+  }
 
   start(): void {
     this.connect();
@@ -113,6 +126,14 @@ export class EventForwarder {
     // Check if this channel is in our subscription
     if (!this.config.alertChannels.includes(channel)) return;
 
+    // Evaluate strategies before formatting
+    if (this.strategyManager && this.config.tradingEnabled) {
+      const actions = this.strategyManager.evaluate(msg as WsEvent);
+      for (const action of actions) {
+        this.executeStrategyAction(action);
+      }
+    }
+
     const priority = EVENT_PRIORITY[type];
     const formatted = this.formatEvent(msg as WsEvent);
     if (!formatted) return;
@@ -137,6 +158,41 @@ export class EventForwarder {
       case "token_new": return formatTokenNew(event.data);
       case "sol_price": return formatSolPrice(event.data);
       default: return null;
+    }
+  }
+
+  // ── Strategy Execution ──────────────────────────────────────────
+
+  private async executeStrategyAction(action: StrategyAction): Promise<void> {
+    const { strategy, mint, sol_amount, reason } = action;
+
+    switch (strategy.mode) {
+      case "autonomous": {
+        if (!this.tradingEngine || !this.walletManager?.isUnlocked) {
+          this.api.log("warn", `Strategy "${strategy.name}": wallet not unlocked, skipping autonomous trade`);
+          return;
+        }
+        const keypair = this.walletManager.getKeypair();
+        const result = await this.tradingEngine.buy(mint, sol_amount ?? 0.1, keypair);
+        if (result.success) {
+          this.strategyManager?.recordSpend(sol_amount ?? 0.1);
+          this.postWakeHook(`Strategy "${strategy.name}": BUY ${sol_amount} SOL of ${mint}. ${reason}. Tx: ${result.signature}`);
+        } else {
+          this.postWakeHook(`Strategy "${strategy.name}": BUY FAILED — ${result.error}. ${reason}`);
+        }
+        break;
+      }
+
+      case "confirm": {
+        const message = `${reason}. Buy ${sol_amount} SOL? Strategy: "${strategy.name}" (confirm mode). Confirm or skip.`;
+        this.postAgentHook(message, {});
+        break;
+      }
+
+      case "alert": {
+        this.postWakeHook(`Strategy "${strategy.name}" match: ${reason}`);
+        break;
+      }
     }
   }
 

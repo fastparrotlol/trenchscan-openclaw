@@ -10,6 +10,9 @@ export interface PluginConfig {
   minMcap: number;
   maxMcap: number;
   batchWindowSec: number;
+  rpcUrl: string;
+  dataDir: string;
+  tradingEnabled: boolean;
 }
 
 export const DEFAULT_CONFIG: Omit<PluginConfig, "apiKey" | "hookToken"> = {
@@ -20,7 +23,73 @@ export const DEFAULT_CONFIG: Omit<PluginConfig, "apiKey" | "hookToken"> = {
   minMcap: 0,
   maxMcap: 0,
   batchWindowSec: 30,
+  rpcUrl: "https://api.mainnet-beta.solana.com",
+  dataDir: "./data",
+  tradingEnabled: false,
 };
+
+// ── Wallet ───────────────────────────────────────────────────────────
+
+export interface WalletData {
+  publicKey: string;
+  encrypted: boolean;
+  secretKey: string;   // base58-encoded (plaintext or AES-256-GCM ciphertext)
+  salt?: string;       // hex, present when encrypted
+  iv?: string;         // hex, present when encrypted
+  tag?: string;        // hex, present when encrypted
+}
+
+// ── Trading ──────────────────────────────────────────────────────────
+
+export interface TradeResult {
+  success: boolean;
+  signature?: string;
+  error?: string;
+  expectedAmount?: number;
+  mode: "bonding" | "amm";
+}
+
+// ── Strategy ─────────────────────────────────────────────────────────
+
+export interface Strategy {
+  name: string;
+  active: boolean;
+  mode: "autonomous" | "confirm" | "alert";
+
+  entry: {
+    trigger: "kol_buy" | "low_risk" | "new_token";
+    conditions: {
+      kol_names?: string[];
+      max_risk_score?: number;
+      min_mcap?: number;
+      max_mcap?: number;
+      sol_amount: number;
+    };
+  };
+
+  exit: {
+    take_profit_pct?: number;
+    stop_loss_pct?: number;
+    bundle_dump?: boolean;
+    trailing_stop_pct?: number;
+    max_hold_minutes?: number;
+  };
+
+  limits: {
+    max_open_positions: number;
+    max_sol_per_trade: number;
+    max_daily_sol: number;
+  };
+}
+
+export interface StrategyAction {
+  strategy: Strategy;
+  action: "buy" | "sell";
+  mint: string;
+  sol_amount?: number;
+  percent?: number;
+  reason: string;
+}
 
 // ── WS Message Types ────────────────────────────────────────────────
 
