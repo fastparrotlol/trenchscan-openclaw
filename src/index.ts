@@ -6,6 +6,7 @@ import { EventForwarder } from "./events.js";
 import { WalletManager } from "./wallet.js";
 import { TradingEngine } from "./trading.js";
 import { StrategyManager } from "./strategy.js";
+import { PositionManager } from "./positions.js";
 
 // ── Plugin Entry ────────────────────────────────────────────────────
 
@@ -27,6 +28,9 @@ export default function register(api: OpenClawPluginAPI): void {
     jitoTipLamports: config.jitoTipLamports,
   });
   const strategyManager = new StrategyManager(config.dataDir, api);
+  const positionManager = new PositionManager(api);
+
+  strategyManager.setPositionManager(positionManager);
 
   // Register 8 trading tools
   registerTradingTools(api, config, walletManager, tradingEngine, strategyManager);
@@ -37,7 +41,7 @@ export default function register(api: OpenClawPluginAPI): void {
 
   // Start realtime event forwarding
   forwarder = new EventForwarder(config, api);
-  forwarder.setTrading(strategyManager, tradingEngine, walletManager);
+  forwarder.setTrading(strategyManager, tradingEngine, walletManager, positionManager);
   forwarder.start();
 
   api.logger.info("TrenchScan plugin ready (15 tools)");

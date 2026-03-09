@@ -103,7 +103,7 @@ The plugin subscribes to TrenchScan WebSocket and forwards events to your AI age
 |---------|--------|
 | `kol_trades` | KOL buy/sell activity |
 | `bundles` | New bundle detection, bundle dump alerts |
-| `tokens` | New token creation |
+| `tokens` | New token creation, token price updates (used for position monitoring) |
 | `market` | SOL price updates |
 
 ### Batching
@@ -117,6 +117,7 @@ Strategies define automated trading behavior. Each strategy has:
 - **Entry trigger** — what initiates a trade (`kol_buy`, `low_risk`, `new_token`)
 - **Conditions** — filters (KOL names, risk score, market cap range, SOL amount)
 - **Exit rules** — take profit, stop loss, trailing stop, max hold time, bundle dump exit
+- **Automatic exits** — PositionManager monitors `token_update` prices in real-time and auto-sells when exit rules trigger
 - **Mode** — `autonomous` (auto-execute), `confirm` (ask first), `alert` (notify only)
 - **Limits** — max open positions, max SOL per trade, daily SOL cap
 
@@ -176,11 +177,11 @@ See [SECURITY.md](./SECURITY.md) for responsible disclosure.
 │       ▼              ▼                 ▼            │
 │  TrenchScan    TradingEngine    TrenchScan WS       │
 │  REST API      (Solana RPC)     (realtime feed)     │
-│                     │                               │
-│              ┌──────┴──────┐                        │
-│              │             │                        │
-│         WalletMgr    StrategyMgr                    │
-│         (AES-256)    (auto-trade)                   │
+│                     │                 │             │
+│              ┌──────┼──────┐    PositionMgr         │
+│              │      │      │    (exit monitor)      │
+│         WalletMgr   │  StrategyMgr                  │
+│         (AES-256)   │  (auto-trade)                 │
 └─────────────────────────────────────────────────────┘
 ```
 

@@ -92,6 +92,7 @@ export interface StrategyAction {
   sol_amount?: number;
   percent?: number;
   reason: string;
+  priceSol?: number;
 }
 
 // ── WS Message Types ────────────────────────────────────────────────
@@ -147,6 +148,17 @@ export interface TokenNewData {
   bonding_progress: number;
 }
 
+export interface TokenUpdateData {
+  mint: string;
+  price_sol: number;
+  market_cap_usd: number;
+  buy_count: number;
+  sell_count: number;
+  volume_sol: number;
+  trader_count: number;
+  bonding_progress: number;
+}
+
 export interface SolPriceData {
   price_usd: number;
 }
@@ -158,6 +170,7 @@ export type WsEvent =
   | { type: "bundle_detected"; data: BundleData }
   | { type: "bundle_dump_alert"; data: BundleDumpAlert }
   | { type: "token_new"; data: TokenNewData }
+  | { type: "token_update"; data: TokenUpdateData }
   | { type: "sol_price"; data: SolPriceData };
 
 // ── Channel Mapping ─────────────────────────────────────────────────
@@ -167,6 +180,7 @@ export const EVENT_CHANNEL: Record<WsEvent["type"], string> = {
   bundle_detected: "bundles",
   bundle_dump_alert: "bundles",
   token_new: "tokens",
+  token_update: "tokens",
   sol_price: "market",
 };
 
@@ -179,6 +193,7 @@ export const EVENT_PRIORITY: Record<WsEvent["type"], EventPriority> = {
   bundle_detected: "normal",
   bundle_dump_alert: "high",
   token_new: "normal",
+  token_update: "normal",
   sol_price: "normal",
 };
 

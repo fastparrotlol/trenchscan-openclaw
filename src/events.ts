@@ -8,6 +8,7 @@ import {
 import type { StrategyManager } from "./strategy.js";
 import type { TradingEngine } from "./trading.js";
 import type { WalletManager } from "./wallet.js";
+import type { PositionManager, ExitSignal } from "./positions.js";
 
 // ── Event Forwarder ─────────────────────────────────────────────────
 
@@ -22,16 +23,19 @@ export class EventForwarder {
   private strategyManager: StrategyManager | null = null;
   private tradingEngine: TradingEngine | null = null;
   private walletManager: WalletManager | null = null;
+  private positionManager: PositionManager | null = null;
+  private holdTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private config: PluginConfig,
     private api: OpenClawPluginAPI,
   ) {}
 
-  setTrading(strategyManager: StrategyManager, tradingEngine: TradingEngine, walletManager: WalletManager): void {
+  setTrading(strategyManager: StrategyManager, tradingEngine: TradingEngine, walletManager: WalletManager, positionManager: PositionManager): void {
     this.strategyManager = strategyManager;
     this.tradingEngine = tradingEngine;
     this.walletManager = walletManager;
+    this.positionManager = positionManager;
   }
 
   start(): void {
@@ -39,11 +43,20 @@ export class EventForwarder {
     if (this.config.batchWindowSec > 0) {
       this.batchTimer = setInterval(() => this.flush(), this.config.batchWindowSec * 1000);
     }
+    // Timer to check max_hold_minutes for all positions every 10s
+    this.holdTimer = setInterval(() => {
+      if (!this.positionManager || !this.config.tradingEnabled) return;
+      const signals = this.positionManager.evaluateAllTimers();
+      for (const signal of signals) {
+        this.executeExit(signal);
+      }
+    }, 10_000);
   }
 
   stop(): void {
     this.destroyed = true;
     if (this.batchTimer) clearInterval(this.batchTimer);
+    if (this.holdTimer) clearInterval(this.holdTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.ws) {
       this.ws.removeAllListeners();
@@ -91,9 +104,15 @@ export class EventForwarder {
   private subscribe(): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
+    const channels = [...this.config.alertChannels];
+    // Ensure tokens channel is subscribed for position price monitoring
+    if (this.config.tradingEnabled && !channels.includes("tokens")) {
+      channels.push("tokens");
+    }
+
     const msg: Record<string, unknown> = {
       action: "subscribe",
-      channels: this.config.alertChannels,
+      channels,
     };
 
     const filter: Record<string, number> = {};
@@ -122,6 +141,15 @@ export class EventForwarder {
     // Only handle event types we care about
     const channel = EVENT_CHANNEL[type];
     if (!channel) return;
+
+    // token_update: only used for position exit evaluation, not formatted/batched
+    if (type === "token_update") {
+      if (this.positionManager && this.config.tradingEnabled) {
+        const signal = this.positionManager.evaluatePrice(msg.data.mint, msg.data.price_sol);
+        if (signal) this.executeExit(signal);
+      }
+      return;
+    }
 
     // Check if this channel is in our subscription
     if (!this.config.alertChannels.includes(channel)) return;
@@ -173,10 +201,15 @@ export class EventForwarder {
           return;
         }
         const keypair = this.walletManager.getKeypair();
-        const result = await this.tradingEngine.buy(mint, sol_amount ?? 0.1, keypair);
+        const solAmt = sol_amount ?? 0.1;
+        const result = await this.tradingEngine.buy(mint, solAmt, keypair);
         if (result.success) {
-          this.strategyManager?.recordSpend(sol_amount ?? 0.1);
-          this.postWakeHook(`Strategy "${strategy.name}": BUY ${sol_amount} SOL of ${mint}. ${reason}. Tx: ${result.signature}`);
+          this.strategyManager?.recordSpend(solAmt);
+          // Record position for exit monitoring
+          if (this.positionManager && result.expectedAmount && action.priceSol) {
+            this.positionManager.open(mint, strategy.name, action.priceSol, result.expectedAmount, solAmt, strategy.exit);
+          }
+          this.postWakeHook(`Strategy "${strategy.name}": BUY ${solAmt} SOL of ${mint}. ${reason}. Tx: ${result.signature}`);
         } else {
           this.postWakeHook(`Strategy "${strategy.name}": BUY FAILED — ${result.error}. ${reason}`);
         }
@@ -193,6 +226,31 @@ export class EventForwarder {
         this.postWakeHook(`Strategy "${strategy.name}" match: ${reason}`);
         break;
       }
+    }
+  }
+
+  // ── Exit Execution ─────────────────────────────────────────────
+
+  private async executeExit(signal: ExitSignal): Promise<void> {
+    if (!this.tradingEngine || !this.walletManager?.isUnlocked || !this.positionManager) return;
+
+    const { mint, position, reason, sellPercent } = signal;
+    const sellAmount = Math.floor(position.tokenAmount * (sellPercent / 100));
+
+    try {
+      const keypair = this.walletManager.getKeypair();
+      const result = await this.tradingEngine.sell(mint, sellAmount, keypair);
+
+      if (result.success) {
+        if (sellPercent >= 100) {
+          this.positionManager.close(mint);
+        }
+        this.postWakeHook(`EXIT: sold ${sellPercent}% of ${mint.slice(0, 8)} — ${reason}. Tx: ${result.signature}`);
+      } else {
+        this.api.logger.error(`Exit sell failed for ${mint}: ${result.error}`);
+      }
+    } catch (e) {
+      this.api.logger.error(`Exit execution error for ${mint}: ${e instanceof Error ? e.message : e}`);
     }
   }
 

@@ -1,12 +1,14 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Strategy, StrategyAction, WsEvent, OpenClawPluginAPI } from "./types.js";
+import type { PositionManager } from "./positions.js";
 
 export class StrategyManager {
   private strategiesPath: string;
   private strategies: Strategy[] = [];
   private dailySolSpent = 0;
   private dailyResetDate = new Date().toDateString();
+  private positionManager: PositionManager | null = null;
 
   constructor(
     private dataDir: string,
@@ -81,6 +83,10 @@ export class StrategyManager {
     this.dailySolSpent += sol;
   }
 
+  setPositionManager(pm: PositionManager): void {
+    this.positionManager = pm;
+  }
+
   private evaluateStrategy(strategy: Strategy, event: WsEvent): StrategyAction | null {
     const { entry } = strategy;
 
@@ -107,6 +113,7 @@ export class StrategyManager {
           action: "buy",
           mint: event.data.mint,
           sol_amount: entry.conditions.sol_amount,
+          priceSol: event.data.price_sol,
           reason: `KOL ${event.data.kol_name} bought $${event.data.token_symbol ?? event.data.mint.slice(0, 8)} @ $${Math.round(event.data.market_cap_usd).toLocaleString()} mcap`,
         };
 
@@ -121,6 +128,7 @@ export class StrategyManager {
           action: "buy",
           mint: event.data.mint,
           sol_amount: entry.conditions.sol_amount,
+          priceSol: event.data.price_sol,
           reason: `New token $${event.data.symbol ?? event.data.mint.slice(0, 8)} @ $${Math.round(event.data.market_cap_usd).toLocaleString()} mcap`,
         };
 
@@ -137,6 +145,12 @@ export class StrategyManager {
   private checkLimits(strategy: Strategy): boolean {
     const { limits } = strategy;
     const solAmount = strategy.entry.conditions.sol_amount;
+
+    // Max open positions
+    if (this.positionManager && this.positionManager.count() >= limits.max_open_positions) {
+      this.api.logger.warn(`Strategy "${strategy.name}": max_open_positions reached (${this.positionManager.count()}/${limits.max_open_positions})`);
+      return false;
+    }
 
     // Daily SOL limit
     if (this.dailySolSpent + solAmount > limits.max_daily_sol) {
