@@ -1,8 +1,8 @@
 {
   "id": "trenchscan",
   "name": "trenchscan",
-  "version": "1.0.0",
-  "description": "Solana pump.fun token scanner — tools for on-demand analysis + realtime KOL/bundle alerts",
+  "version": "1.1.0",
+  "description": "Solana pump.fun token scanner — 20 AI tools for analysis, trading, position management + realtime KOL/bundle alerts",
   "entry": "index.js",
   "configSchema": {
     "type": "object",
@@ -60,7 +60,7 @@
       "dataDir": {
         "type": "string",
         "default": "./data",
-        "description": "Directory for wallet and strategy persistence"
+        "description": "Directory for wallet, strategy, position, and trade persistence"
       },
       "tradingEnabled": {
         "type": "boolean",
@@ -80,6 +80,31 @@
         "type": "number",
         "default": 200000,
         "description": "Jito MEV tip in lamports (default: 200000 = 0.0002 SOL)"
+      },
+      "withdrawConfig": {
+        "type": "object",
+        "description": "Auto-withdrawal config: {enabled, destination, mode, percent?, afterEveryTrade}",
+        "properties": {
+          "enabled": { "type": "boolean", "default": false },
+          "destination": { "type": "string", "description": "Destination wallet address" },
+          "mode": { "type": "string", "enum": ["all_profit", "percent"], "default": "all_profit" },
+          "percent": { "type": "number", "description": "Percentage of profit to withdraw (if mode=percent)" },
+          "afterEveryTrade": { "type": "boolean", "default": false, "description": "Auto-withdraw after each sell" }
+        }
+      },
+      "alertFilters": {
+        "type": "object",
+        "description": "Alert filtering by mint/symbol whitelist/blacklist",
+        "properties": {
+          "mints": { "type": "array", "items": { "type": "string" }, "description": "Whitelist: only show alerts for these mints" },
+          "symbols": { "type": "array", "items": { "type": "string" }, "description": "Whitelist: only show alerts for these symbols (case-insensitive)" },
+          "excludeMints": { "type": "array", "items": { "type": "string" }, "description": "Blacklist: never show alerts for these mints" }
+        }
+      },
+      "rateLimitRpm": {
+        "type": "number",
+        "default": 60,
+        "description": "API rate limit in requests per minute (for risk checks)"
       }
     }
   }

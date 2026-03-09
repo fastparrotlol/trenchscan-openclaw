@@ -1,4 +1,5 @@
-import type { KolTradeData, BundleData, BundleDumpAlert, TokenNewData, SolPriceData } from "./types.js";
+import type { KolTradeData, BundleData, BundleDumpAlert, TokenNewData, SolPriceData, TradeRecord, PluginMetrics } from "./types.js";
+import type { Position } from "./positions.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -215,4 +216,53 @@ export function formatDiscoverTokens(data: any): string {
     lines.push(`$${t.symbol} | MCap: ${usd(t.market_cap_usd)} | Vol: ${t.volume_sol?.toFixed(1)} SOL | Bonding: ${pct(t.bonding_progress)} | B/S: ${t.buy_count}/${t.sell_count}`, `  ${t.mint}`);
   }
   return lines.join("\n");
+}
+
+// ── New Formatters ──────────────────────────────────────────────────
+
+export function formatTradeHistory(records: TradeRecord[]): string {
+  if (records.length === 0) return "No trades recorded yet.";
+
+  const lines: string[] = [`Trade History (${records.length} trades):`, ""];
+  for (const r of records) {
+    const side = r.side.toUpperCase();
+    const time = ago(r.timestamp);
+    const mintShort = r.mint.slice(0, 8) + "…";
+    lines.push(`${side} ${r.solAmount.toFixed(4)} SOL | ${mintShort} | ${r.mode} | ${r.reason} | ${time}`);
+    if (r.signature) lines.push(`  tx: ${r.signature}`);
+  }
+  return lines.join("\n");
+}
+
+export function formatPositions(positions: Position[]): string {
+  if (positions.length === 0) return "No open positions.";
+
+  const lines: string[] = [`Open Positions (${positions.length}):`, ""];
+  for (const p of positions) {
+    const mintShort = p.mint.slice(0, 8) + "…";
+    const heldMin = Math.round((Date.now() - p.openedAt) / 60_000);
+    const tiers = p.tpTiersFired.length > 0 ? ` | TP tiers fired: ${p.tpTiersFired.length}` : "";
+    lines.push(`${mintShort} | Strategy: ${p.strategy} | Entry: ${p.entryPriceSol.toFixed(8)} SOL | Spent: ${p.solSpent.toFixed(4)} SOL | Held: ${heldMin}min${tiers}`);
+  }
+  return lines.join("\n");
+}
+
+export function formatHealth(metrics: PluginMetrics): string {
+  const uptimeMin = Math.round(metrics.uptime / 60_000);
+  return [
+    `── Plugin Health ──`,
+    `WS: ${metrics.wsConnected ? "Connected" : "Disconnected"} | Reconnects: ${metrics.wsReconnects}`,
+    `Events received: ${metrics.eventsReceived}`,
+    `Trades executed: ${metrics.tradesExecuted}`,
+    `API calls: ${metrics.apiCallsCount}`,
+    `Open positions: ${metrics.openPositions}`,
+    `Daily SOL spent: ${metrics.dailySolSpent.toFixed(4)}`,
+    `Uptime: ${uptimeMin}min`,
+  ].join("\n");
+}
+
+export function formatPositionUpdate(mint: string, entryPrice: number, currentPrice: number): string {
+  const changePct = ((currentPrice - entryPrice) / entryPrice) * 100;
+  const sign = changePct >= 0 ? "+" : "";
+  return `${mint.slice(0, 8)}… | Entry: ${entryPrice.toFixed(8)} → ${currentPrice.toFixed(8)} SOL (${sign}${changePct.toFixed(1)}%)`;
 }

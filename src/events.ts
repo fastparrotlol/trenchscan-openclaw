@@ -1,5 +1,5 @@
 import WebSocket from "ws";
-import type { PluginConfig, WsEvent, StrategyAction, OpenClawPluginAPI } from "./types.js";
+import type { PluginConfig, WsEvent, StrategyAction, TokenNewData, PluginMetrics, WithdrawConfig, AlertFilter, OpenClawPluginAPI } from "./types.js";
 import { EVENT_CHANNEL, EVENT_PRIORITY } from "./types.js";
 import {
   formatKolTrade, formatBundleDetected, formatBundleDumpAlert,
@@ -26,16 +26,39 @@ export class EventForwarder {
   private positionManager: PositionManager | null = null;
   private holdTimer: ReturnType<typeof setInterval> | null = null;
 
+  // Metrics
+  private wsReconnects = 0;
+  private eventsReceived = 0;
+  private tradesExecuted = 0;
+  private apiCallsCount = 0;
+  private startedAt = Date.now();
+
+  // Rate limiter (token bucket by timestamps)
+  private apiCallTimestamps: number[] = [];
+
+  // Runtime mutable config
+  private withdrawConfig: WithdrawConfig | undefined;
+  private alertFilters: AlertFilter | undefined;
+  private rateLimitRpm: number;
+
   constructor(
     private config: PluginConfig,
     private api: OpenClawPluginAPI,
-  ) {}
+  ) {
+    this.withdrawConfig = config.withdrawConfig;
+    this.alertFilters = config.alertFilters;
+    this.rateLimitRpm = config.rateLimitRpm ?? 60;
+  }
 
   setTrading(strategyManager: StrategyManager, tradingEngine: TradingEngine, walletManager: WalletManager, positionManager: PositionManager): void {
     this.strategyManager = strategyManager;
     this.tradingEngine = tradingEngine;
     this.walletManager = walletManager;
     this.positionManager = positionManager;
+  }
+
+  setWithdrawConfig(wc: WithdrawConfig): void {
+    this.withdrawConfig = wc;
   }
 
   start(): void {
@@ -63,8 +86,20 @@ export class EventForwarder {
       this.ws.close();
       this.ws = null;
     }
-    // Flush remaining events
     this.flush();
+  }
+
+  getMetrics(): PluginMetrics {
+    return {
+      wsConnected: this.ws?.readyState === WebSocket.OPEN,
+      wsReconnects: this.wsReconnects,
+      eventsReceived: this.eventsReceived,
+      tradesExecuted: this.tradesExecuted,
+      apiCallsCount: this.apiCallsCount,
+      uptime: Date.now() - this.startedAt,
+      openPositions: this.positionManager?.count() ?? 0,
+      dailySolSpent: this.positionManager?.getDailySolSpent() ?? 0,
+    };
   }
 
   // ── WS Connection ───────────────────────────────────────────────
@@ -76,7 +111,7 @@ export class EventForwarder {
     this.ws = new WebSocket(url);
 
     this.ws.on("open", () => {
-      this.api.logger.info( "WS connected to TrenchScan");
+      this.api.logger.info("WS connected to TrenchScan");
       this.reconnectDelay = 1000;
       this.subscribe();
     });
@@ -91,12 +126,12 @@ export class EventForwarder {
     });
 
     this.ws.on("close", () => {
-      this.api.logger.warn( "WS disconnected");
+      this.api.logger.warn("WS disconnected");
       this.scheduleReconnect();
     });
 
     this.ws.on("error", (err: Error) => {
-      this.api.logger.error( `WS error: ${err.message}`);
+      this.api.logger.error(`WS error: ${err.message}`);
       this.ws?.close();
     });
   }
@@ -105,7 +140,6 @@ export class EventForwarder {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
     const channels = [...this.config.alertChannels];
-    // Ensure tokens channel is subscribed for position price monitoring
     if (this.config.tradingEnabled && !channels.includes("tokens")) {
       channels.push("tokens");
     }
@@ -125,11 +159,44 @@ export class EventForwarder {
 
   private scheduleReconnect(): void {
     if (this.destroyed) return;
+    this.wsReconnects++;
     this.reconnectTimer = setTimeout(() => {
-      this.api.logger.info( `WS reconnecting (delay: ${this.reconnectDelay}ms)`);
+      this.api.logger.info(`WS reconnecting (delay: ${this.reconnectDelay}ms)`);
       this.connect();
     }, this.reconnectDelay);
     this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
+  }
+
+  // ── Rate Limiter ──────────────────────────────────────────────────
+
+  private checkRateLimit(): boolean {
+    const now = Date.now();
+    this.apiCallTimestamps = this.apiCallTimestamps.filter((t) => now - t < 60_000);
+    if (this.apiCallTimestamps.length >= this.rateLimitRpm) return false;
+    this.apiCallTimestamps.push(now);
+    this.apiCallsCount++;
+    return true;
+  }
+
+  // ── Alert Filtering ───────────────────────────────────────────────
+
+  private matchesAlertFilter(msg: any): boolean {
+    if (!this.alertFilters) return true;
+
+    const mint: string | undefined = msg.data?.mint;
+    const symbol: string | undefined = msg.data?.token_symbol ?? msg.data?.symbol;
+
+    // Blacklist check
+    if (mint && this.alertFilters.excludeMints?.includes(mint)) return false;
+
+    // Whitelist checks — if whitelists exist, must match at least one
+    const hasWhitelist = (this.alertFilters.mints?.length ?? 0) > 0 || (this.alertFilters.symbols?.length ?? 0) > 0;
+    if (!hasWhitelist) return true;
+
+    if (mint && this.alertFilters.mints?.includes(mint)) return true;
+    if (symbol && this.alertFilters.symbols?.some((s) => s.toLowerCase() === symbol.toLowerCase())) return true;
+
+    return !hasWhitelist;
   }
 
   // ── Message Handling ────────────────────────────────────────────
@@ -138,11 +205,18 @@ export class EventForwarder {
     const type = msg.type as WsEvent["type"] | undefined;
     if (!type || !msg.data) return;
 
-    // Only handle event types we care about
     const channel = EVENT_CHANNEL[type];
     if (!channel) return;
 
-    // token_update: only used for position exit evaluation, not formatted/batched
+    this.eventsReceived++;
+
+    // bundle_dump_alert → position exit (independent of channel subscription)
+    if (type === "bundle_dump_alert" && this.positionManager && this.config.tradingEnabled) {
+      const signal = this.positionManager.evaluateBundleDump(msg.data.mint);
+      if (signal) this.executeExit(signal);
+    }
+
+    // token_update: position exit evaluation + low_risk not applicable here
     if (type === "token_update") {
       if (this.positionManager && this.config.tradingEnabled) {
         const signal = this.positionManager.evaluatePrice(msg.data.mint, msg.data.price_sol);
@@ -151,8 +225,16 @@ export class EventForwarder {
       return;
     }
 
+    // token_new: evaluate low_risk strategies
+    if (type === "token_new" && this.config.tradingEnabled) {
+      this.evaluateLowRiskStrategies(msg.data as TokenNewData);
+    }
+
     // Check if this channel is in our subscription
     if (!this.config.alertChannels.includes(channel)) return;
+
+    // Alert filtering
+    if (!this.matchesAlertFilter(msg)) return;
 
     // Evaluate strategies before formatting
     if (this.strategyManager && this.config.tradingEnabled) {
@@ -167,13 +249,10 @@ export class EventForwarder {
     if (!formatted) return;
 
     if (priority === "high") {
-      // High signal — instant forward to /hooks/agent
       this.postAgentHook(formatted, msg);
     } else if (this.config.batchWindowSec === 0) {
-      // Instant mode — send each event immediately
       this.postWakeHook(formatted);
     } else {
-      // Normal — accumulate in batch
       this.batch.push(formatted);
     }
   }
@@ -189,6 +268,59 @@ export class EventForwarder {
     }
   }
 
+  // ── Low Risk Evaluation ───────────────────────────────────────────
+
+  private async evaluateLowRiskStrategies(tokenData: TokenNewData): Promise<void> {
+    if (!this.strategyManager || !this.tradingEngine || !this.walletManager || !this.positionManager) return;
+
+    const strategies = this.strategyManager.list().filter(
+      (s) => s.active && s.entry.trigger === "low_risk",
+    );
+    if (strategies.length === 0) return;
+
+    // mcap prefilter
+    const matching = strategies.filter((s) => {
+      const { min_mcap, max_mcap } = s.entry.conditions;
+      if (min_mcap && tokenData.market_cap_usd < min_mcap) return false;
+      if (max_mcap && tokenData.market_cap_usd > max_mcap) return false;
+      return true;
+    });
+    if (matching.length === 0) return;
+
+    // Rate limit check
+    if (!this.checkRateLimit()) {
+      this.api.logger.warn("Rate limit reached, skipping low_risk evaluation");
+      return;
+    }
+
+    try {
+      const url = `${this.config.apiUrl}/api/v1/risk/${tokenData.mint}`;
+      const resp = await fetch(url, {
+        headers: { "x-api-key": this.config.apiKey },
+      });
+      if (!resp.ok) return;
+
+      const data = await resp.json() as { risk_score: number };
+
+      for (const strategy of matching) {
+        const maxRisk = strategy.entry.conditions.max_risk_score;
+        if (maxRisk != null && data.risk_score <= maxRisk) {
+          const action: StrategyAction = {
+            strategy,
+            action: "buy",
+            mint: tokenData.mint,
+            sol_amount: strategy.entry.conditions.sol_amount,
+            priceSol: tokenData.price_sol,
+            reason: `Low risk (${data.risk_score}) on $${tokenData.symbol ?? tokenData.mint.slice(0, 8)} @ $${Math.round(tokenData.market_cap_usd).toLocaleString()} mcap`,
+          };
+          this.executeStrategyAction(action);
+        }
+      }
+    } catch (e) {
+      this.api.logger.error(`Risk API call failed: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
   // ── Strategy Execution ──────────────────────────────────────────
 
   private async executeStrategyAction(action: StrategyAction): Promise<void> {
@@ -197,7 +329,7 @@ export class EventForwarder {
     switch (strategy.mode) {
       case "autonomous": {
         if (!this.tradingEngine || !this.walletManager?.isUnlocked) {
-          this.api.logger.warn( `Strategy "${strategy.name}": wallet not unlocked, skipping autonomous trade`);
+          this.api.logger.warn(`Strategy "${strategy.name}": wallet not unlocked, skipping autonomous trade`);
           return;
         }
         const keypair = this.walletManager.getKeypair();
@@ -205,10 +337,23 @@ export class EventForwarder {
         const result = await this.tradingEngine.buy(mint, solAmt, keypair);
         if (result.success) {
           this.strategyManager?.recordSpend(solAmt);
-          // Record position for exit monitoring
+          this.tradesExecuted++;
           if (this.positionManager && result.expectedAmount && action.priceSol) {
             this.positionManager.open(mint, strategy.name, action.priceSol, result.expectedAmount, solAmt, strategy.exit);
           }
+          // Record trade
+          this.positionManager?.recordTrade({
+            mint,
+            strategy: strategy.name,
+            side: "buy",
+            solAmount: solAmt,
+            tokenAmount: result.expectedAmount ?? 0,
+            priceSol: action.priceSol ?? 0,
+            signature: result.signature ?? "",
+            mode: result.mode,
+            reason,
+            timestamp: Date.now(),
+          });
           this.postWakeHook(`Strategy "${strategy.name}": BUY ${solAmt} SOL of ${mint}. ${reason}. Tx: ${result.signature}`);
         } else {
           this.postWakeHook(`Strategy "${strategy.name}": BUY FAILED — ${result.error}. ${reason}`);
@@ -242,10 +387,56 @@ export class EventForwarder {
       const result = await this.tradingEngine.sell(mint, sellAmount, keypair);
 
       if (result.success) {
+        this.tradesExecuted++;
+
+        // Record trade
+        this.positionManager.recordTrade({
+          mint,
+          strategy: position.strategy,
+          side: "sell",
+          solAmount: result.expectedAmount ?? 0,
+          tokenAmount: sellAmount,
+          priceSol: position.entryPriceSol,
+          signature: result.signature ?? "",
+          mode: result.mode,
+          reason,
+          timestamp: Date.now(),
+        });
+
         if (sellPercent >= 100) {
           this.positionManager.close(mint);
+        } else {
+          // Partial sell — find tier index if applicable
+          const tiers = position.exitRules.take_profit_tiers;
+          let tierIdx: number | undefined;
+          if (tiers?.length) {
+            const sorted = [...tiers].sort((a, b) => a.pct - b.pct);
+            tierIdx = sorted.findIndex((t) => t.sell_pct === sellPercent && !position.tpTiersFired.includes(sorted.indexOf(t)));
+            if (tierIdx < 0) tierIdx = undefined;
+          }
+          this.positionManager.reducePosition(mint, sellPercent, tierIdx);
         }
+
         this.postWakeHook(`EXIT: sold ${sellPercent}% of ${mint.slice(0, 8)} — ${reason}. Tx: ${result.signature}`);
+
+        // Auto-withdraw after sell
+        if (this.withdrawConfig?.enabled && this.withdrawConfig.afterEveryTrade && result.expectedAmount) {
+          const profit = result.expectedAmount - (position.solSpent * sellPercent / 100);
+          if (profit > 0) {
+            try {
+              let withdrawAmount = profit;
+              if (this.withdrawConfig.mode === "percent" && this.withdrawConfig.percent) {
+                withdrawAmount = profit * this.withdrawConfig.percent / 100;
+              }
+              if (withdrawAmount > 0.001) {
+                const sig = await this.walletManager.transferSol(this.withdrawConfig.destination, withdrawAmount);
+                this.api.logger.info(`Auto-withdraw ${withdrawAmount.toFixed(4)} SOL → ${this.withdrawConfig.destination}: ${sig}`);
+              }
+            } catch (e) {
+              this.api.logger.error(`Auto-withdraw failed: ${e instanceof Error ? e.message : e}`);
+            }
+          }
+        }
       } else {
         this.api.logger.error(`Exit sell failed for ${mint}: ${result.error}`);
       }
@@ -275,7 +466,7 @@ export class EventForwarder {
         body: JSON.stringify({ text, mode: "now" }),
       });
     } catch (e) {
-      this.api.logger.error( `Hook /wake failed: ${e instanceof Error ? e.message : e}`);
+      this.api.logger.error(`Hook /wake failed: ${e instanceof Error ? e.message : e}`);
     }
   }
 
@@ -292,7 +483,7 @@ export class EventForwarder {
         body: JSON.stringify({ message, model: "openclaw:main" }),
       });
     } catch (e) {
-      this.api.logger.error( `Hook /agent failed: ${e instanceof Error ? e.message : e}`);
+      this.api.logger.error(`Hook /agent failed: ${e instanceof Error ? e.message : e}`);
     }
   }
 }

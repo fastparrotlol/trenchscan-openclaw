@@ -16,7 +16,9 @@
   - `confirm` — require explicit approval before each trade
   - `autonomous` — execute automatically within configured limits
 - Daily SOL spending limits are enforced per strategy
-- Position limits prevent overexposure to a single token
+- **Per-strategy position limits** prevent overexposure per trading strategy
+- **API rate limiting** — configurable requests per minute (default: 60 RPM)
+- **Auto-withdraw minimum** — 0.001 SOL threshold to prevent dust transactions
 
 ## Fee Transparency
 
@@ -29,7 +31,7 @@
 ## Data Storage
 
 - Wallet data is stored locally in `dataDir` (default: `./data`)
-- Strategy configurations are stored locally
+- Strategy configurations, positions, and trade history are stored locally
 - No data is sent to external servers except:
   - TrenchScan API calls (for token analysis)
   - Solana RPC calls (for trading transactions)

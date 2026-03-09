@@ -146,10 +146,13 @@ export class StrategyManager {
     const { limits } = strategy;
     const solAmount = strategy.entry.conditions.sol_amount;
 
-    // Max open positions
-    if (this.positionManager && this.positionManager.count() >= limits.max_open_positions) {
-      this.api.logger.warn(`Strategy "${strategy.name}": max_open_positions reached (${this.positionManager.count()}/${limits.max_open_positions})`);
-      return false;
+    // Max open positions (per-strategy)
+    if (this.positionManager) {
+      const strategyCount = this.positionManager.countByStrategy(strategy.name);
+      if (strategyCount >= limits.max_open_positions) {
+        this.api.logger.warn(`Strategy "${strategy.name}": max_open_positions reached (${strategyCount}/${limits.max_open_positions})`);
+        return false;
+      }
     }
 
     // Daily SOL limit

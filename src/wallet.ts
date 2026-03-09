@@ -1,4 +1,4 @@
-import { Keypair, Connection, PublicKey } from "@solana/web3.js";
+import { Keypair, Connection, PublicKey, SystemProgram, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import bs58 from "bs58";
 import * as crypto from "node:crypto";
@@ -132,6 +132,24 @@ export class WalletManager {
     } catch {
       throw new Error("Wrong password or corrupted wallet file.");
     }
+  }
+
+  async transferSol(destination: string, amountSol: number): Promise<string> {
+    if (!this.keypair) throw new Error("Wallet is locked. Use unlock_wallet first.");
+    if (amountSol <= 0) throw new Error("Amount must be positive.");
+
+    const lamports = Math.round(amountSol * 1e9);
+    const tx = new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: this.keypair.publicKey,
+        toPubkey: new PublicKey(destination),
+        lamports,
+      }),
+    );
+
+    const signature = await sendAndConfirmTransaction(this.connection, tx, [this.keypair]);
+    this.api.logger.info(`Transferred ${amountSol} SOL to ${destination}: ${signature}`);
+    return signature;
   }
 
   async getBalance(): Promise<{ sol: number; tokens: { mint: string; amount: number; decimals: number }[] }> {

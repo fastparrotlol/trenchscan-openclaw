@@ -16,6 +16,9 @@ export interface PluginConfig {
   feeWallet?: string;
   feeBps?: number;
   jitoTipLamports?: number;
+  withdrawConfig?: WithdrawConfig;
+  alertFilters?: AlertFilter;
+  rateLimitRpm?: number;
 }
 
 export const DEFAULT_CONFIG: Omit<PluginConfig, "apiKey" | "hookToken"> = {
@@ -76,6 +79,7 @@ export interface Strategy {
     bundle_dump?: boolean;
     trailing_stop_pct?: number;
     max_hold_minutes?: number;
+    take_profit_tiers?: { pct: number; sell_pct: number }[];
   };
 
   limits: {
@@ -93,6 +97,52 @@ export interface StrategyAction {
   percent?: number;
   reason: string;
   priceSol?: number;
+}
+
+// ── Trade Record ────────────────────────────────────────────────────
+
+export interface TradeRecord {
+  mint: string;
+  strategy: string;
+  side: "buy" | "sell";
+  solAmount: number;
+  tokenAmount: number;
+  priceSol: number;
+  signature: string;
+  mode: "bonding" | "amm";
+  reason: string;
+  timestamp: number;
+}
+
+// ── Withdraw Config ─────────────────────────────────────────────────
+
+export interface WithdrawConfig {
+  enabled: boolean;
+  destination: string;
+  mode: "all_profit" | "percent";
+  percent?: number;
+  afterEveryTrade: boolean;
+}
+
+// ── Alert Filter ────────────────────────────────────────────────────
+
+export interface AlertFilter {
+  mints?: string[];
+  symbols?: string[];
+  excludeMints?: string[];
+}
+
+// ── Plugin Metrics ──────────────────────────────────────────────────
+
+export interface PluginMetrics {
+  wsConnected: boolean;
+  wsReconnects: number;
+  eventsReceived: number;
+  tradesExecuted: number;
+  apiCallsCount: number;
+  uptime: number;
+  openPositions: number;
+  dailySolSpent: number;
 }
 
 // ── WS Message Types ────────────────────────────────────────────────
