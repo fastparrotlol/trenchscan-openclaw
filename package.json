@@ -1,7 +1,7 @@
 {
   "name": "openclaw-trenchscan",
-  "version": "1.0.0",
-  "description": "OpenClaw plugin for TrenchScan — Solana pump.fun token scanner with 15 AI tools, realtime KOL/bundle alerts, and autonomous trading",
+  "version": "1.2.0",
+  "description": "OpenClaw plugin for TrenchScan — Solana pump.fun token scanner with 22 AI tools, realtime KOL/bundle/smart-money alerts, and autonomous trading",
   "type": "module",
   "main": "build/index.js",
   "license": "MIT",

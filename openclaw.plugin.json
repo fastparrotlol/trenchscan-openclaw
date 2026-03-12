@@ -1,12 +1,13 @@
 {
   "id": "trenchscan",
-  "name": "trenchscan",
-  "version": "1.1.0",
-  "description": "Solana pump.fun token scanner — 20 AI tools for analysis, trading, position management + realtime KOL/bundle alerts",
-  "entry": "index.js",
+  "name": "TrenchScan",
+  "version": "1.2.0",
+  "description": "Solana pump.fun token scanner — 22 AI tools for analysis, wallet intel, autonomous trading, position management + realtime KOL/bundle/smart-money alerts",
+  "skills": ["skills/trenchscan"],
   "configSchema": {
     "type": "object",
     "required": ["apiKey", "hookToken"],
+    "additionalProperties": false,
     "properties": {
       "apiKey": {
         "type": "string",
@@ -107,5 +108,15 @@
         "description": "API rate limit in requests per minute (for risk checks)"
       }
     }
+  },
+  "uiHints": {
+    "apiKey": { "label": "API Key", "sensitive": true },
+    "hookToken": { "label": "Hook Token", "sensitive": true },
+    "apiUrl": { "label": "API URL", "placeholder": "https://trenchscan.lol" },
+    "wsUrl": { "label": "WebSocket URL", "placeholder": "wss://trenchscan.lol/api/v1/ws" },
+    "rpcUrl": { "label": "Solana RPC URL", "placeholder": "https://api.mainnet-beta.solana.com" },
+    "tradingEnabled": { "label": "Enable Trading" },
+    "feeWallet": { "label": "Fee Wallet", "placeholder": "Solana wallet address" },
+    "dataDir": { "label": "Data Directory", "placeholder": "./data" }
   }
 }
