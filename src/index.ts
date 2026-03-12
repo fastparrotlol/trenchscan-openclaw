@@ -17,7 +17,7 @@ export default function register(api: OpenClawPluginAPI): void {
 
   api.logger.info(`TrenchScan plugin initializing (api: ${config.apiUrl}, channels: ${config.alertChannels.join(",")})`);
 
-  // Register 7 analysis tools
+  // Register 8 analysis tools
   registerTools(api, config);
 
   // Initialize trading modules
@@ -36,7 +36,7 @@ export default function register(api: OpenClawPluginAPI): void {
   forwarder = new EventForwarder(config, api);
   forwarder.setTrading(strategyManager, tradingEngine, walletManager, positionManager);
 
-  // Register 13 trading tools (8 original + 5 new)
+  // Register 14 trading tools
   registerTradingTools(api, config, walletManager, tradingEngine, strategyManager, positionManager, forwarder);
 
   if (config.tradingEnabled) {
@@ -45,7 +45,7 @@ export default function register(api: OpenClawPluginAPI): void {
 
   forwarder.start();
 
-  api.logger.info("TrenchScan plugin ready (20 tools)");
+  api.logger.info("TrenchScan plugin ready (22 tools)");
 }
 
 // ── Config Parsing ──────────────────────────────────────────────────

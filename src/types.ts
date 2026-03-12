@@ -63,13 +63,26 @@ export interface Strategy {
   mode: "autonomous" | "confirm" | "alert";
 
   entry: {
-    trigger: "kol_buy" | "low_risk" | "new_token";
+    trigger: "kol_buy" | "low_risk" | "new_token" | "smart_money_buy" | "whale_buy";
     conditions: {
       kol_names?: string[];
       max_risk_score?: number;
       min_mcap?: number;
       max_mcap?: number;
       sol_amount: number;
+      min_sol_amount?: number;
+      min_kol_count?: number;
+      confluence_window_seconds?: number;
+      risk_scaling?: {
+        low_pct: number;
+        medium_pct: number;
+        high_pct: number;
+      };
+      dca?: {
+        max_buys: number;
+        interval_seconds: number;
+        scale_factor: number;
+      };
     };
   };
 
@@ -79,7 +92,11 @@ export interface Strategy {
     bundle_dump?: boolean;
     trailing_stop_pct?: number;
     max_hold_minutes?: number;
+    sell_after_seconds?: number;
     take_profit_tiers?: { pct: number; sell_pct: number }[];
+    sniper_exit?: { min_sellers: number };
+    kol_sell_exit?: boolean;
+    kol_sell_exit_names?: string[];
   };
 
   limits: {
@@ -213,6 +230,23 @@ export interface SolPriceData {
   price_usd: number;
 }
 
+export interface TradeData {
+  wallet: string;
+  mint: string;
+  is_buy: boolean;
+  sol_amount_lamports: number;
+  sol_amount: number;
+  token_amount: number;
+  price_sol: number;
+  market_cap_usd: number;
+  labels: string[];
+  tx_signature: string;
+  slot: number;
+  timestamp_ms: number;
+  token_name?: string;
+  token_symbol?: string;
+}
+
 // ── WS Message Union ────────────────────────────────────────────────
 
 export type WsEvent =
@@ -221,7 +255,8 @@ export type WsEvent =
   | { type: "bundle_dump_alert"; data: BundleDumpAlert }
   | { type: "token_new"; data: TokenNewData }
   | { type: "token_update"; data: TokenUpdateData }
-  | { type: "sol_price"; data: SolPriceData };
+  | { type: "sol_price"; data: SolPriceData }
+  | { type: "trade"; data: TradeData };
 
 // ── Channel Mapping ─────────────────────────────────────────────────
 
@@ -232,6 +267,7 @@ export const EVENT_CHANNEL: Record<WsEvent["type"], string> = {
   token_new: "tokens",
   token_update: "tokens",
   sol_price: "market",
+  trade: "trades",
 };
 
 // ── Priority ────────────────────────────────────────────────────────
@@ -245,6 +281,7 @@ export const EVENT_PRIORITY: Record<WsEvent["type"], EventPriority> = {
   token_new: "normal",
   token_update: "normal",
   sol_price: "normal",
+  trade: "normal",
 };
 
 // ── OpenClaw Plugin API (minimal typing) ────────────────────────────

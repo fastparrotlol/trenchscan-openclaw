@@ -14,6 +14,10 @@ export interface Position {
   highWaterMark: number;
   exitRules: Strategy["exit"];
   tpTiersFired: number[];
+  dcaBuyCount?: number;
+  dcaConfig?: { max_buys: number; interval_seconds: number; scale_factor: number };
+  lastDcaAt?: number;
+  initialSolAmount?: number;
 }
 
 export interface ExitSignal {
@@ -87,6 +91,8 @@ export class PositionManager {
     tokenAmount: number,
     solSpent: number,
     exitRules: Strategy["exit"],
+    dcaConfig?: { max_buys: number; interval_seconds: number; scale_factor: number },
+    initialSolAmount?: number,
   ): void {
     this.positions.set(mint, {
       mint,
@@ -98,6 +104,10 @@ export class PositionManager {
       highWaterMark: entryPriceSol,
       exitRules,
       tpTiersFired: [],
+      dcaBuyCount: 0,
+      dcaConfig,
+      lastDcaAt: Date.now(),
+      initialSolAmount,
     });
     this.savePositions();
     this.api.logger.info(`Position opened: ${mint} @ ${entryPriceSol} SOL (strategy: ${strategy})`);
@@ -208,7 +218,20 @@ export class PositionManager {
       }
     }
 
-    // Max hold time
+    // Seconds-precision hold exit
+    if (exitRules.sell_after_seconds != null) {
+      const heldMs = Date.now() - pos.openedAt;
+      if (heldMs >= exitRules.sell_after_seconds * 1000) {
+        return {
+          mint,
+          position: pos,
+          reason: `Hold ${exitRules.sell_after_seconds}s`,
+          sellPercent: 100,
+        };
+      }
+    }
+
+    // Max hold time (minutes)
     if (exitRules.max_hold_minutes != null) {
       const heldMinutes = (Date.now() - pos.openedAt) / 60_000;
       if (heldMinutes >= exitRules.max_hold_minutes) {
@@ -238,25 +261,83 @@ export class PositionManager {
     };
   }
 
-  /** Check max_hold_minutes for all open positions */
+  /** Check sell_after_seconds and max_hold_minutes for all open positions */
   evaluateAllTimers(): ExitSignal[] {
     const signals: ExitSignal[] = [];
     const now = Date.now();
 
     for (const pos of this.positions.values()) {
-      if (pos.exitRules.max_hold_minutes == null) continue;
-      const heldMinutes = (now - pos.openedAt) / 60_000;
-      if (heldMinutes >= pos.exitRules.max_hold_minutes) {
-        signals.push({
-          mint: pos.mint,
-          position: pos,
-          reason: `Hold ${Math.round(heldMinutes)}min`,
-          sellPercent: 100,
-        });
+      const heldMs = now - pos.openedAt;
+
+      // Seconds-precision exit (checked first — faster trigger)
+      if (pos.exitRules.sell_after_seconds != null) {
+        if (heldMs >= pos.exitRules.sell_after_seconds * 1000) {
+          signals.push({
+            mint: pos.mint,
+            position: pos,
+            reason: `Hold ${pos.exitRules.sell_after_seconds}s`,
+            sellPercent: 100,
+          });
+          continue;
+        }
+      }
+
+      // Minutes-precision exit (legacy)
+      if (pos.exitRules.max_hold_minutes != null) {
+        const heldMinutes = heldMs / 60_000;
+        if (heldMinutes >= pos.exitRules.max_hold_minutes) {
+          signals.push({
+            mint: pos.mint,
+            position: pos,
+            reason: `Hold ${Math.round(heldMinutes)}min`,
+            sellPercent: 100,
+          });
+        }
       }
     }
 
     return signals;
+  }
+
+  // ── DCA ────────────────────────────────────────────────────────────
+
+  evaluateDca(mint: string, currentPrice: number): { shouldBuy: boolean; solAmount: number } | null {
+    const pos = this.positions.get(mint);
+    if (!pos || !pos.dcaConfig || !pos.initialSolAmount) return null;
+
+    const { max_buys, interval_seconds, scale_factor } = pos.dcaConfig;
+    const buyCount = pos.dcaBuyCount ?? 0;
+
+    // Only DCA if price < entry, interval elapsed, buyCount < max_buys
+    if (buyCount >= max_buys) return null;
+    if (currentPrice >= pos.entryPriceSol) return null;
+
+    const now = Date.now();
+    const lastDca = pos.lastDcaAt ?? pos.openedAt;
+    if (now - lastDca < interval_seconds * 1000) return null;
+
+    const solAmount = pos.initialSolAmount * Math.pow(scale_factor, buyCount + 1);
+    return { shouldBuy: true, solAmount };
+  }
+
+  recordDcaBuy(mint: string, tokens: number, sol: number): void {
+    const pos = this.positions.get(mint);
+    if (!pos) return;
+
+    // Update average entry price
+    const totalSol = pos.solSpent + sol;
+    const totalTokens = pos.tokenAmount + tokens;
+    pos.entryPriceSol = totalSol / totalTokens * pos.entryPriceSol / (pos.solSpent / pos.tokenAmount);
+    // Simpler: weighted average
+    pos.entryPriceSol = totalSol / totalTokens;
+
+    pos.tokenAmount = totalTokens;
+    pos.solSpent = totalSol;
+    pos.dcaBuyCount = (pos.dcaBuyCount ?? 0) + 1;
+    pos.lastDcaAt = Date.now();
+
+    this.savePositions();
+    this.api.logger.info(`DCA buy #${pos.dcaBuyCount} on ${mint}: +${sol.toFixed(4)} SOL, +${tokens} tokens`);
   }
 
   // ── Trade History ───────────────────────────────────────────────────

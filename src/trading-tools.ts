@@ -4,7 +4,7 @@ import type { TradingEngine } from "./trading.js";
 import type { StrategyManager } from "./strategy.js";
 import type { PositionManager } from "./positions.js";
 import type { EventForwarder } from "./events.js";
-import { formatTradeHistory, formatPositions, formatHealth } from "./format.js";
+import { formatTradeHistory, formatPositions, formatHealth, formatTradeAnalytics } from "./format.js";
 
 function textResult(text: string): ToolResult {
   return { content: [{ type: "text", text }] };
@@ -182,6 +182,7 @@ export function registerTradingTools(
 
       try {
         const parsed = JSON.parse(params.rules as string);
+        const cond = parsed.entry?.conditions;
         const strategy: Strategy = {
           name: params.name as string,
           active: parsed.active ?? true,
@@ -189,11 +190,16 @@ export function registerTradingTools(
           entry: {
             trigger: parsed.entry?.trigger ?? "kol_buy",
             conditions: {
-              kol_names: parsed.entry?.conditions?.kol_names,
-              max_risk_score: parsed.entry?.conditions?.max_risk_score,
-              min_mcap: parsed.entry?.conditions?.min_mcap,
-              max_mcap: parsed.entry?.conditions?.max_mcap,
-              sol_amount: parsed.entry?.conditions?.sol_amount ?? 0.1,
+              kol_names: cond?.kol_names,
+              max_risk_score: cond?.max_risk_score,
+              min_mcap: cond?.min_mcap,
+              max_mcap: cond?.max_mcap,
+              sol_amount: cond?.sol_amount ?? 0.1,
+              min_sol_amount: cond?.min_sol_amount,
+              min_kol_count: cond?.min_kol_count,
+              confluence_window_seconds: cond?.confluence_window_seconds,
+              risk_scaling: cond?.risk_scaling,
+              dca: cond?.dca,
             },
           },
           exit: {
@@ -203,6 +209,9 @@ export function registerTradingTools(
             trailing_stop_pct: parsed.exit?.trailing_stop_pct,
             max_hold_minutes: parsed.exit?.max_hold_minutes,
             take_profit_tiers: parsed.exit?.take_profit_tiers,
+            sniper_exit: parsed.exit?.sniper_exit,
+            kol_sell_exit: parsed.exit?.kol_sell_exit,
+            kol_sell_exit_names: parsed.exit?.kol_sell_exit_names,
           },
           limits: {
             max_open_positions: parsed.limits?.max_open_positions ?? 3,
@@ -239,10 +248,31 @@ export function registerTradingTools(
         if (s.entry.conditions.kol_names?.length) {
           lines.push(`  KOLs: ${s.entry.conditions.kol_names.join(", ")}`);
         }
+        if (s.entry.conditions.min_sol_amount) {
+          lines.push(`  Min trade size: ${s.entry.conditions.min_sol_amount} SOL`);
+        }
+        if (s.entry.conditions.min_kol_count && s.entry.conditions.min_kol_count > 1) {
+          lines.push(`  Confluence: ${s.entry.conditions.min_kol_count} KOLs within ${s.entry.conditions.confluence_window_seconds ?? 300}s`);
+        }
+        if (s.entry.conditions.risk_scaling) {
+          const rs = s.entry.conditions.risk_scaling;
+          lines.push(`  Risk scaling: low ${rs.low_pct}% | med ${rs.medium_pct}% | high ${rs.high_pct}%`);
+        }
+        if (s.entry.conditions.dca) {
+          const d = s.entry.conditions.dca;
+          lines.push(`  DCA: max ${d.max_buys} buys, every ${d.interval_seconds}s, scale ${d.scale_factor}x`);
+        }
         if (s.exit.take_profit_pct) lines.push(`  TP: +${s.exit.take_profit_pct}%`);
         if (s.exit.stop_loss_pct) lines.push(`  SL: -${s.exit.stop_loss_pct}%`);
         if (s.exit.take_profit_tiers?.length) {
           lines.push(`  TP tiers: ${s.exit.take_profit_tiers.map((t) => `+${t.pct}%→sell ${t.sell_pct}%`).join(", ")}`);
+        }
+        if (s.exit.sniper_exit) {
+          lines.push(`  Sniper exit: ${s.exit.sniper_exit.min_sellers} sellers`);
+        }
+        if (s.exit.kol_sell_exit) {
+          const names = s.exit.kol_sell_exit_names?.length ? s.exit.kol_sell_exit_names.join(", ") : "any KOL";
+          lines.push(`  KOL sell exit: ${names}`);
         }
         lines.push("");
       }
@@ -375,6 +405,96 @@ export function registerTradingTools(
     async execute() {
       const metrics = eventForwarder.getMetrics();
       return textResult(formatHealth(metrics));
+    },
+  });
+
+  // 14. trade_analytics
+  api.registerTool({
+    name: "trade_analytics",
+    description: "Compute trading performance analytics: PnL, win rate, avg hold time, best/worst trades, by-strategy breakdown",
+    parameters: {
+      type: "object",
+      properties: {
+        period: { type: "string", description: "Time period: 1d, 7d, 30d, all", default: "all" },
+        strategy: { type: "string", description: "Filter by strategy name (optional)" },
+      },
+    },
+    async execute(_id, params) {
+      const period = (params.period as string) || "all";
+      const strategyFilter = params.strategy as string | undefined;
+
+      let trades = positionManager.getHistory();
+
+      // Period filter
+      const now = Date.now();
+      const periodMs: Record<string, number> = { "1d": 86_400_000, "7d": 604_800_000, "30d": 2_592_000_000 };
+      if (period !== "all" && periodMs[period]) {
+        trades = trades.filter((t) => now - t.timestamp < periodMs[period]);
+      }
+
+      // Strategy filter
+      if (strategyFilter) {
+        trades = trades.filter((t) => t.strategy === strategyFilter);
+      }
+
+      // Compute analytics
+      const buys = trades.filter((t) => t.side === "buy");
+      const sells = trades.filter((t) => t.side === "sell");
+      const totalBuySol = buys.reduce((s, t) => s + t.solAmount, 0);
+      const totalSellSol = sells.reduce((s, t) => s + t.solAmount, 0);
+      const totalPnl = totalSellSol - totalBuySol;
+
+      // Per-mint PnL
+      const mintPnl = new Map<string, number>();
+      for (const t of trades) {
+        const cur = mintPnl.get(t.mint) ?? 0;
+        mintPnl.set(t.mint, cur + (t.side === "sell" ? t.solAmount : -t.solAmount));
+      }
+
+      const mintPnls = [...mintPnl.entries()].sort((a, b) => b[1] - a[1]);
+      const winners = mintPnls.filter(([, p]) => p > 0).length;
+      const losers = mintPnls.filter(([, p]) => p < 0).length;
+      const winRate = mintPnls.length > 0 ? (winners / mintPnls.length) * 100 : 0;
+
+      // Avg hold time (from buy to sell per mint)
+      const holdTimes: number[] = [];
+      const buyTimes = new Map<string, number>();
+      for (const t of trades) {
+        if (t.side === "buy" && !buyTimes.has(t.mint)) {
+          buyTimes.set(t.mint, t.timestamp);
+        } else if (t.side === "sell" && buyTimes.has(t.mint)) {
+          holdTimes.push(t.timestamp - buyTimes.get(t.mint)!);
+          buyTimes.delete(t.mint);
+        }
+      }
+      const avgHoldMs = holdTimes.length > 0 ? holdTimes.reduce((s, h) => s + h, 0) / holdTimes.length : 0;
+
+      // By strategy breakdown
+      const byStrategy = new Map<string, { buySol: number; sellSol: number; count: number }>();
+      for (const t of trades) {
+        const entry = byStrategy.get(t.strategy) ?? { buySol: 0, sellSol: 0, count: 0 };
+        if (t.side === "buy") { entry.buySol += t.solAmount; entry.count++; }
+        else entry.sellSol += t.solAmount;
+        byStrategy.set(t.strategy, entry);
+      }
+
+      const analytics = {
+        period,
+        totalTrades: trades.length,
+        totalBuySol,
+        totalSellSol,
+        totalPnl,
+        winRate,
+        winners,
+        losers,
+        avgHoldMs,
+        bestTrade: mintPnls[0] ?? null,
+        worstTrade: mintPnls[mintPnls.length - 1] ?? null,
+        roi: totalBuySol > 0 ? (totalPnl / totalBuySol) * 100 : 0,
+        byStrategy: Object.fromEntries(byStrategy),
+      };
+
+      return textResult(formatTradeAnalytics(analytics));
     },
   });
 }

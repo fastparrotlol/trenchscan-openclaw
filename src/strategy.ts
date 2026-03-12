@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { Strategy, StrategyAction, WsEvent, OpenClawPluginAPI } from "./types.js";
+import type { Strategy, StrategyAction, WsEvent, TradeData, OpenClawPluginAPI } from "./types.js";
 import type { PositionManager } from "./positions.js";
 
 export class StrategyManager {
@@ -95,6 +95,8 @@ export class StrategyManager {
       case "kol_buy":
         if (event.type !== "kol_trade") return null;
         if (!event.data.is_buy) return null;
+        // Multi-KOL confluence: defer to events.ts confluence logic
+        if (entry.conditions.min_kol_count && entry.conditions.min_kol_count > 1) return null;
         // Filter by KOL names if specified
         if (entry.conditions.kol_names && entry.conditions.kol_names.length > 0) {
           const nameMatch = entry.conditions.kol_names.some(
@@ -116,6 +118,12 @@ export class StrategyManager {
           priceSol: event.data.price_sol,
           reason: `KOL ${event.data.kol_name} bought $${event.data.token_symbol ?? event.data.mint.slice(0, 8)} @ $${Math.round(event.data.market_cap_usd).toLocaleString()} mcap`,
         };
+
+      case "smart_money_buy":
+        return this.evaluateTradeEvent(strategy, event, "smart_money");
+
+      case "whale_buy":
+        return this.evaluateTradeEvent(strategy, event, "whale");
 
       case "new_token":
         if (event.type !== "token_new") return null;
@@ -140,6 +148,33 @@ export class StrategyManager {
       default:
         return null;
     }
+  }
+
+  private evaluateTradeEvent(strategy: Strategy, event: WsEvent, requiredLabel: string): StrategyAction | null {
+    if (event.type !== "trade") return null;
+    const data = event.data as TradeData;
+    if (!data.is_buy) return null;
+    if (!data.labels.includes(requiredLabel)) return null;
+
+    const { entry } = strategy;
+    // Min SOL amount filter
+    if (entry.conditions.min_sol_amount && data.sol_amount < entry.conditions.min_sol_amount) return null;
+    // Market cap filters
+    if (entry.conditions.min_mcap && data.market_cap_usd < entry.conditions.min_mcap) return null;
+    if (entry.conditions.max_mcap && data.market_cap_usd > entry.conditions.max_mcap) return null;
+    // Limits check
+    if (!this.checkLimits(strategy)) return null;
+
+    const label = requiredLabel === "smart_money" ? "Smart money" : "Whale";
+    const symbol = data.token_symbol ? `$${data.token_symbol}` : data.mint.slice(0, 8);
+    return {
+      strategy,
+      action: "buy",
+      mint: data.mint,
+      sol_amount: entry.conditions.sol_amount,
+      priceSol: data.price_sol,
+      reason: `${label} bought ${data.sol_amount.toFixed(2)} SOL of ${symbol} @ $${Math.round(data.market_cap_usd).toLocaleString()} mcap`,
+    };
   }
 
   private checkLimits(strategy: Strategy): boolean {

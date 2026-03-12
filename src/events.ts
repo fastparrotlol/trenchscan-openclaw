@@ -1,5 +1,5 @@
 import WebSocket from "ws";
-import type { PluginConfig, WsEvent, StrategyAction, TokenNewData, PluginMetrics, WithdrawConfig, AlertFilter, OpenClawPluginAPI } from "./types.js";
+import type { PluginConfig, WsEvent, StrategyAction, TokenNewData, TradeData, KolTradeData, PluginMetrics, WithdrawConfig, AlertFilter, OpenClawPluginAPI } from "./types.js";
 import { EVENT_CHANNEL, EVENT_PRIORITY } from "./types.js";
 import {
   formatKolTrade, formatBundleDetected, formatBundleDumpAlert,
@@ -41,6 +41,13 @@ export class EventForwarder {
   private alertFilters: AlertFilter | undefined;
   private rateLimitRpm: number;
 
+  // Feature 7: Multi-KOL confluence
+  private kolConfluence = new Map<string, { kols: Set<string>; firstSeen: number; event: KolTradeData }>();
+  private confluenceCleanupTimer: ReturnType<typeof setInterval> | null = null;
+
+  // Feature 5: Sniper sell tracking
+  private sniperSells = new Map<string, Set<string>>();
+
   constructor(
     private config: PluginConfig,
     private api: OpenClawPluginAPI,
@@ -66,6 +73,17 @@ export class EventForwarder {
     if (this.config.batchWindowSec > 0) {
       this.batchTimer = setInterval(() => this.flush(), this.config.batchWindowSec * 1000);
     }
+    // Cleanup stale confluence entries every 60s
+    this.confluenceCleanupTimer = setInterval(() => {
+      const now = Date.now();
+      for (const [mint, entry] of this.kolConfluence) {
+        const maxWindow = 600_000; // 10min max
+        if (now - entry.firstSeen > maxWindow) {
+          this.kolConfluence.delete(mint);
+        }
+      }
+    }, 60_000);
+
     // Timer to check max_hold_minutes for all positions every 10s
     this.holdTimer = setInterval(() => {
       if (!this.positionManager || !this.config.tradingEnabled) return;
@@ -73,13 +91,14 @@ export class EventForwarder {
       for (const signal of signals) {
         this.executeExit(signal);
       }
-    }, 10_000);
+    }, 1_000);
   }
 
   stop(): void {
     this.destroyed = true;
     if (this.batchTimer) clearInterval(this.batchTimer);
     if (this.holdTimer) clearInterval(this.holdTimer);
+    if (this.confluenceCleanupTimer) clearInterval(this.confluenceCleanupTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.ws) {
       this.ws.removeAllListeners();
@@ -142,6 +161,20 @@ export class EventForwarder {
     const channels = [...this.config.alertChannels];
     if (this.config.tradingEnabled && !channels.includes("tokens")) {
       channels.push("tokens");
+    }
+
+    // Auto-add channels needed by strategies
+    if (this.strategyManager && this.config.tradingEnabled) {
+      const strategies = this.strategyManager.list().filter((s) => s.active);
+      const needsSmartMoney = strategies.some((s) => s.entry.trigger === "smart_money_buy");
+      const needsWhale = strategies.some((s) => s.entry.trigger === "whale_buy");
+      const needsSniper = strategies.some((s) => s.exit.sniper_exit);
+      if ((needsSmartMoney || needsSniper) && !channels.includes("smart_money")) {
+        channels.push("smart_money");
+      }
+      if (needsWhale && !channels.includes("whale_alerts")) {
+        channels.push("whale_alerts");
+      }
     }
 
     const msg: Record<string, unknown> = {
@@ -216,11 +249,22 @@ export class EventForwarder {
       if (signal) this.executeExit(signal);
     }
 
-    // token_update: position exit evaluation + low_risk not applicable here
+    // trade events: smart_money/whale triggers + sniper tracking
+    if (type === "trade" && this.config.tradingEnabled) {
+      this.handleTradeEvent(msg.data as TradeData);
+      return;
+    }
+
+    // token_update: position exit evaluation + DCA
     if (type === "token_update") {
       if (this.positionManager && this.config.tradingEnabled) {
         const signal = this.positionManager.evaluatePrice(msg.data.mint, msg.data.price_sol);
-        if (signal) this.executeExit(signal);
+        if (signal) {
+          this.executeExit(signal);
+        } else {
+          // No exit → check DCA
+          this.evaluateDca(msg.data.mint, msg.data.price_sol);
+        }
       }
       return;
     }
@@ -228,6 +272,16 @@ export class EventForwarder {
     // token_new: evaluate low_risk strategies
     if (type === "token_new" && this.config.tradingEnabled) {
       this.evaluateLowRiskStrategies(msg.data as TokenNewData);
+    }
+
+    // kol_trade: confluence tracking + KOL sell exit
+    if (type === "kol_trade" && this.config.tradingEnabled) {
+      const kolData = msg.data as KolTradeData;
+      if (kolData.is_buy) {
+        this.handleKolConfluence(kolData);
+      } else {
+        this.handleKolSellExit(kolData);
+      }
     }
 
     // Check if this channel is in our subscription
@@ -266,6 +320,161 @@ export class EventForwarder {
       case "sol_price": return formatSolPrice(event.data);
       default: return null;
     }
+  }
+
+  // ── Trade Event Handling (smart_money / whale / sniper) ──────────
+
+  private handleTradeEvent(data: TradeData): void {
+    if (!this.strategyManager) return;
+
+    // Feature 5: Track sniper sells
+    if (!data.is_buy && data.labels.includes("sniper") && this.positionManager) {
+      const snipers = this.sniperSells.get(data.mint);
+      if (snipers) {
+        snipers.add(data.wallet);
+      } else {
+        this.sniperSells.set(data.mint, new Set([data.wallet]));
+      }
+
+      // Check sniper exit for positions on this mint
+      const pos = this.positionManager.getPosition(data.mint);
+      if (pos?.exitRules.sniper_exit) {
+        const count = this.sniperSells.get(data.mint)?.size ?? 0;
+        if (count >= pos.exitRules.sniper_exit.min_sellers) {
+          this.executeExit({
+            mint: data.mint,
+            position: pos,
+            reason: `${count} snipers selling`,
+            sellPercent: 100,
+          });
+        }
+      }
+    }
+
+    // Evaluate strategies (smart_money_buy / whale_buy)
+    if (data.is_buy) {
+      const actions = this.strategyManager.evaluate({ type: "trade", data });
+      for (const action of actions) {
+        this.executeStrategyAction(action);
+      }
+    }
+  }
+
+  // ── KOL Confluence (Feature 7) ─────────────────────────────────
+
+  private handleKolConfluence(data: KolTradeData): void {
+    if (!this.strategyManager) return;
+
+    const strategies = this.strategyManager.list().filter(
+      (s) => s.active && s.entry.trigger === "kol_buy" && (s.entry.conditions.min_kol_count ?? 0) > 1,
+    );
+    if (strategies.length === 0) return;
+
+    // Filter by KOL names if specified in any strategy
+    const entry = this.kolConfluence.get(data.mint);
+    const now = Date.now();
+
+    if (entry) {
+      entry.kols.add(data.kol_name.toLowerCase());
+    } else {
+      this.kolConfluence.set(data.mint, {
+        kols: new Set([data.kol_name.toLowerCase()]),
+        firstSeen: now,
+        event: data,
+      });
+    }
+
+    const confluenceEntry = this.kolConfluence.get(data.mint)!;
+
+    for (const strategy of strategies) {
+      const windowMs = (strategy.entry.conditions.confluence_window_seconds ?? 300) * 1000;
+      if (now - confluenceEntry.firstSeen > windowMs) continue;
+
+      // Filter by kol_names if set
+      if (strategy.entry.conditions.kol_names?.length) {
+        const matchingKols = [...confluenceEntry.kols].filter((k) =>
+          strategy.entry.conditions.kol_names!.some((n) => n.toLowerCase() === k),
+        );
+        if (matchingKols.length < (strategy.entry.conditions.min_kol_count ?? 2)) continue;
+      } else {
+        if (confluenceEntry.kols.size < (strategy.entry.conditions.min_kol_count ?? 2)) continue;
+      }
+
+      // mcap filters
+      if (strategy.entry.conditions.min_mcap && data.market_cap_usd < strategy.entry.conditions.min_mcap) continue;
+      if (strategy.entry.conditions.max_mcap && data.market_cap_usd > strategy.entry.conditions.max_mcap) continue;
+
+      const kolList = [...confluenceEntry.kols].join(", ");
+      this.executeStrategyAction({
+        strategy,
+        action: "buy",
+        mint: data.mint,
+        sol_amount: strategy.entry.conditions.sol_amount,
+        priceSol: data.price_sol,
+        reason: `${confluenceEntry.kols.size} KOLs (${kolList}) bought $${data.token_symbol ?? data.mint.slice(0, 8)} @ $${Math.round(data.market_cap_usd).toLocaleString()} mcap`,
+      });
+
+      // Remove from confluence map to avoid re-firing
+      this.kolConfluence.delete(data.mint);
+      break;
+    }
+  }
+
+  // ── KOL Sell Exit (Feature 6) ──────────────────────────────────
+
+  private handleKolSellExit(data: KolTradeData): void {
+    if (!this.positionManager) return;
+
+    const pos = this.positionManager.getPosition(data.mint);
+    if (!pos || !pos.exitRules.kol_sell_exit) return;
+
+    // Check name filter
+    if (pos.exitRules.kol_sell_exit_names?.length) {
+      const nameMatch = pos.exitRules.kol_sell_exit_names.some(
+        (n) => n.toLowerCase() === data.kol_name.toLowerCase(),
+      );
+      if (!nameMatch) return;
+    }
+
+    this.executeExit({
+      mint: data.mint,
+      position: pos,
+      reason: `KOL ${data.kol_name} selling`,
+      sellPercent: 100,
+    });
+  }
+
+  // ── DCA Evaluation (Feature 4) ─────────────────────────────────
+
+  private evaluateDca(mint: string, currentPrice: number): void {
+    if (!this.positionManager || !this.tradingEngine || !this.walletManager?.isUnlocked) return;
+
+    const result = this.positionManager.evaluateDca(mint, currentPrice);
+    if (!result) return;
+
+    const keypair = this.walletManager.getKeypair();
+    this.tradingEngine.buy(mint, result.solAmount, keypair).then((tradeResult) => {
+      if (tradeResult.success && this.positionManager) {
+        this.positionManager.recordDcaBuy(mint, tradeResult.expectedAmount ?? 0, result.solAmount);
+        this.strategyManager?.recordSpend(result.solAmount);
+        this.tradesExecuted++;
+        this.positionManager.recordTrade({
+          mint,
+          strategy: this.positionManager.getPosition(mint)?.strategy ?? "dca",
+          side: "buy",
+          solAmount: result.solAmount,
+          tokenAmount: tradeResult.expectedAmount ?? 0,
+          priceSol: currentPrice,
+          signature: tradeResult.signature ?? "",
+          mode: tradeResult.mode,
+          reason: `DCA buy #${(this.positionManager.getPosition(mint)?.dcaBuyCount ?? 0)}`,
+          timestamp: Date.now(),
+        });
+        this.postWakeHook(`DCA: bought ${result.solAmount.toFixed(4)} SOL more of ${mint.slice(0, 8)}…`);
+      }
+    }).catch((e) => {
+      this.api.logger.error(`DCA buy failed: ${e instanceof Error ? e.message : e}`);
+    });
   }
 
   // ── Low Risk Evaluation ───────────────────────────────────────────
@@ -333,42 +542,88 @@ export class EventForwarder {
           return;
         }
         const keypair = this.walletManager.getKeypair();
-        const solAmt = sol_amount ?? 0.1;
-        const result = await this.tradingEngine.buy(mint, solAmt, keypair);
-        if (result.success) {
-          this.strategyManager?.recordSpend(solAmt);
-          this.tradesExecuted++;
-          if (this.positionManager && result.expectedAmount && action.priceSol) {
-            this.positionManager.open(mint, strategy.name, action.priceSol, result.expectedAmount, solAmt, strategy.exit);
+        let solAmt = sol_amount ?? 0.1;
+
+        // Anti-rug + risk scaling (Features 3, 9)
+        if (strategy.entry.conditions.max_risk_score != null) {
+          try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 3000);
+            const url = `${this.config.apiUrl}/api/v1/risk/${mint}`;
+            const resp = await fetch(url, {
+              headers: { "x-api-key": this.config.apiKey },
+              signal: controller.signal,
+            });
+            clearTimeout(timeout);
+
+            if (resp.ok) {
+              const riskData = await resp.json() as { risk_score: number };
+              if (riskData.risk_score > strategy.entry.conditions.max_risk_score) {
+                this.api.logger.info(`Strategy "${strategy.name}": skipping ${mint} — risk ${riskData.risk_score} > max ${strategy.entry.conditions.max_risk_score}`);
+                return;
+              }
+              // Risk scaling
+              if (strategy.entry.conditions.risk_scaling) {
+                const rs = strategy.entry.conditions.risk_scaling;
+                let scalePct: number;
+                if (riskData.risk_score <= 20) scalePct = rs.low_pct;
+                else if (riskData.risk_score <= 45) scalePct = rs.medium_pct;
+                else scalePct = rs.high_pct;
+                solAmt = solAmt * scalePct / 100;
+              }
+            }
+          } catch {
+            this.api.logger.warn(`Strategy "${strategy.name}": risk check timeout for ${mint}, proceeding`);
           }
-          // Record trade
-          this.positionManager?.recordTrade({
-            mint,
-            strategy: strategy.name,
-            side: "buy",
-            solAmount: solAmt,
-            tokenAmount: result.expectedAmount ?? 0,
-            priceSol: action.priceSol ?? 0,
-            signature: result.signature ?? "",
-            mode: result.mode,
-            reason,
-            timestamp: Date.now(),
-          });
-          this.postWakeHook(`Strategy "${strategy.name}": BUY ${solAmt} SOL of ${mint}. ${reason}. Tx: ${result.signature}`);
-        } else {
-          this.postWakeHook(`Strategy "${strategy.name}": BUY FAILED — ${result.error}. ${reason}`);
         }
+
+        // Fire-and-forget: don't await buy — process result asynchronously
+        const dcaConfig = strategy.entry.conditions.dca;
+        this.tradingEngine.buy(mint, solAmt, keypair).then((result) => {
+          if (result.success) {
+            this.strategyManager?.recordSpend(solAmt);
+            this.tradesExecuted++;
+            if (this.positionManager && result.expectedAmount && action.priceSol) {
+              this.positionManager.open(mint, strategy.name, action.priceSol, result.expectedAmount, solAmt, strategy.exit, dcaConfig, solAmt);
+            }
+            this.positionManager?.recordTrade({
+              mint,
+              strategy: strategy.name,
+              side: "buy",
+              solAmount: solAmt,
+              tokenAmount: result.expectedAmount ?? 0,
+              priceSol: action.priceSol ?? 0,
+              signature: result.signature ?? "",
+              mode: result.mode,
+              reason,
+              timestamp: Date.now(),
+            });
+            this.postWakeHook(`Strategy "${strategy.name}": BUY ${solAmt.toFixed(4)} SOL of ${mint}. ${reason}. Tx: ${result.signature}`);
+          } else {
+            this.postWakeHook(`Strategy "${strategy.name}": BUY FAILED — ${result.error}. ${reason}`);
+          }
+        }).catch((e) => {
+          this.api.logger.error(`Strategy "${strategy.name}": BUY error — ${e instanceof Error ? e.message : e}`);
+        });
         break;
       }
 
       case "confirm": {
-        const message = `${reason}. Buy ${sol_amount} SOL? Strategy: "${strategy.name}" (confirm mode). Confirm or skip.`;
+        let riskInfo = "";
+        if (strategy.entry.conditions.max_risk_score != null) {
+          riskInfo = ` (anti-rug: max risk ${strategy.entry.conditions.max_risk_score})`;
+        }
+        const message = `${reason}${riskInfo}. Buy ${sol_amount} SOL? Strategy: "${strategy.name}" (confirm mode). Confirm or skip.`;
         this.postAgentHook(message, {});
         break;
       }
 
       case "alert": {
-        this.postWakeHook(`Strategy "${strategy.name}" match: ${reason}`);
+        let riskInfo = "";
+        if (strategy.entry.conditions.max_risk_score != null) {
+          riskInfo = ` | Anti-rug: max risk ${strategy.entry.conditions.max_risk_score}`;
+        }
+        this.postWakeHook(`Strategy "${strategy.name}" match: ${reason}${riskInfo}`);
         break;
       }
     }
@@ -388,6 +643,11 @@ export class EventForwarder {
 
       if (result.success) {
         this.tradesExecuted++;
+
+        // Clean up sniper tracking when position closes
+        if (sellPercent >= 100) {
+          this.sniperSells.delete(mint);
+        }
 
         // Record trade
         this.positionManager.recordTrade({

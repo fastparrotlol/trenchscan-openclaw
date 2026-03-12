@@ -2,6 +2,7 @@ import type { PluginConfig, OpenClawPluginAPI, ToolResult } from "./types.js";
 import {
   formatCheckToken, formatCheckBundle, formatCheckDeployer,
   formatKolTrades, formatMarketOverview, formatAssessRisk, formatDiscoverTokens,
+  formatCheckWallet,
 } from "./format.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -165,6 +166,32 @@ export function registerTools(api: OpenClawPluginAPI, config: PluginConfig): voi
       queryParams.limit = String(params.limit ?? 20);
       const data = await apiCall(config, `/api/v1/tokens`, queryParams);
       return textResult(formatDiscoverTokens(data));
+    },
+  });
+
+  // 8. check_wallet
+  api.registerTool({
+    name: "check_wallet",
+    description: "Analyze a wallet's trading stats and PnL: trade count, volume, tokens, labels, win rate",
+    parameters: {
+      type: "object",
+      properties: {
+        address: { type: "string", description: "Wallet address to analyze" },
+        period: { type: "string", description: "Time period: 1d, 7d, 30d, all", default: "7d" },
+      },
+      required: ["address"],
+    },
+    async execute(_id, params) {
+      const address = params.address as string;
+      const period = (params.period as string) || "7d";
+      const queryParams = { period };
+
+      const [stats, pnl] = await Promise.all([
+        apiCall(config, `/api/v1/analytics/wallet/${address}/stats`, queryParams),
+        apiCall(config, `/api/v1/analytics/wallet/${address}/pnl`, queryParams),
+      ]);
+
+      return textResult(formatCheckWallet(stats, pnl, address, period));
     },
   });
 }

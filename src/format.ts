@@ -261,6 +261,72 @@ export function formatHealth(metrics: PluginMetrics): string {
   ].join("\n");
 }
 
+export function formatCheckWallet(stats: any, pnl: any, wallet: string, period: string): string {
+  const lines: string[] = [
+    `── Wallet Analysis ──`,
+    `Address: ${wallet}`,
+    `Period: ${period}`,
+    "",
+  ];
+
+  if (stats) {
+    lines.push(`Trades: ${stats.trade_count ?? 0} | Buy vol: ${(stats.buy_volume_sol ?? 0).toFixed(2)} SOL | Sell vol: ${(stats.sell_volume_sol ?? 0).toFixed(2)} SOL`);
+    lines.push(`Tokens traded: ${stats.token_count ?? 0}`);
+    if (stats.labels?.length) {
+      lines.push(`Labels: ${stats.labels.join(", ")}`);
+    }
+  }
+
+  if (pnl) {
+    lines.push("");
+    lines.push(`── PnL ──`);
+    lines.push(`Total PnL: ${(pnl.total_pnl_sol ?? 0) >= 0 ? "+" : ""}${(pnl.total_pnl_sol ?? 0).toFixed(4)} SOL`);
+    lines.push(`Win rate: ${((pnl.win_rate ?? 0) * 100).toFixed(1)}%`);
+    lines.push(`Wins: ${pnl.wins ?? 0} | Losses: ${pnl.losses ?? 0}`);
+    if (pnl.best_trade) {
+      lines.push(`Best: ${pnl.best_trade.mint?.slice(0, 8)}… +${(pnl.best_trade.pnl_sol ?? 0).toFixed(4)} SOL`);
+    }
+    if (pnl.worst_trade) {
+      lines.push(`Worst: ${pnl.worst_trade.mint?.slice(0, 8)}… ${(pnl.worst_trade.pnl_sol ?? 0).toFixed(4)} SOL`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+export function formatTradeAnalytics(analytics: any): string {
+  const lines: string[] = [
+    `── Trade Analytics (${analytics.period}) ──`,
+    `Total trades: ${analytics.totalTrades}`,
+    `Buy volume: ${analytics.totalBuySol.toFixed(4)} SOL | Sell volume: ${analytics.totalSellSol.toFixed(4)} SOL`,
+    `PnL: ${analytics.totalPnl >= 0 ? "+" : ""}${analytics.totalPnl.toFixed(4)} SOL | ROI: ${analytics.roi.toFixed(1)}%`,
+    `Win rate: ${analytics.winRate.toFixed(1)}% (${analytics.winners}W / ${analytics.losers}L)`,
+  ];
+
+  if (analytics.avgHoldMs > 0) {
+    const avgMin = Math.round(analytics.avgHoldMs / 60_000);
+    lines.push(`Avg hold time: ${avgMin}min`);
+  }
+
+  if (analytics.bestTrade) {
+    lines.push(`Best trade: ${analytics.bestTrade[0].slice(0, 8)}… +${analytics.bestTrade[1].toFixed(4)} SOL`);
+  }
+  if (analytics.worstTrade && analytics.worstTrade[1] < 0) {
+    lines.push(`Worst trade: ${analytics.worstTrade[0].slice(0, 8)}… ${analytics.worstTrade[1].toFixed(4)} SOL`);
+  }
+
+  const strategies = analytics.byStrategy;
+  if (strategies && Object.keys(strategies).length > 0) {
+    lines.push("", `── By Strategy ──`);
+    for (const [name, data] of Object.entries(strategies) as [string, any][]) {
+      const pnl = data.sellSol - data.buySol;
+      lines.push(`  ${name}: ${data.count} buys | PnL: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(4)} SOL`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
 export function formatPositionUpdate(mint: string, entryPrice: number, currentPrice: number): string {
   const changePct = ((currentPrice - entryPrice) / entryPrice) * 100;
   const sign = changePct >= 0 ? "+" : "";
