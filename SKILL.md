@@ -1,7 +1,7 @@
 # OpenClaw TrenchScan Plugin — AI Agent Skill Reference
 
 > Complete reference for AI agents working with the TrenchScan plugin.
-> 20 tools, Solana pump.fun, autonomous trading, real-time alerts.
+> 22 tools, Solana pump.fun, autonomous trading, real-time alerts.
 
 **Entry point**: `build/index.js` (compiled from `src/index.ts`)
 **Build**: `npm run build` → `build/`
@@ -13,14 +13,17 @@
 
 ```
 OpenClaw Agent (Claude)
-├── 7 Analysis Tools ──── REST API (trenchscan.lol)
-├── 13 Trading Tools ──── Solana RPC (buy/sell on-chain) + position mgmt
+├── 8 Analysis Tools ──── REST API (trenchscan.lol)
+├── 14 Trading Tools ──── Solana RPC (buy/sell on-chain) + position mgmt
 └── EventForwarder ────── WebSocket (real-time alerts)
     ├── TradingEngine      buy/sell bonding curve + AMM
-    ├── StrategyManager    entry triggers, limit checks (per-strategy)
+    ├── StrategyManager    entry triggers (kol_buy, low_risk, new_token, smart_money_buy, whale_buy)
     ├── WalletManager      AES-256-GCM encrypted keypairs + SOL transfers
-    ├── PositionManager    exit rule monitoring (TP tiers/SL/trail/hold/bundle dump)
-    │                      persistence (positions.json, trades.json), PnL tracking
+    ├── PositionManager    exit rules (TP tiers/SL/trail/hold/bundle dump/sniper exit/KOL sell exit)
+    │                      DCA (dollar cost averaging), persistence, PnL tracking
+    ├── KOL Confluence     multi-KOL buy detection with time window
+    ├── Anti-Rug           risk API check before autonomous buys + risk-based position scaling
+    ├── Sniper Tracking    track sniper sells per mint → trigger exit
     ├── Rate Limiter       token bucket (configurable RPM)
     ├── Alert Filters      whitelist/blacklist by mint/symbol
     ├── Auto-Withdraw      profit withdrawal after sells
@@ -33,14 +36,19 @@ OpenClaw Agent (Claude)
 WS connect → subscribe(channels, filter)
    ↓
 kol_trade / bundle_detected / token_new → StrategyManager.evaluate()
+trade (smart_money/whale) → handleTradeEvent() → StrategyManager.evaluate()
+kol_trade (buy) → handleKolConfluence() → multi-KOL detection
    ↓ (if trigger matches)
-executeStrategyAction() → TradingEngine.buy() → PositionManager.open()
-   ↓                                              → recordTrade()
+executeStrategyAction() → anti-rug check → risk scaling → TradingEngine.buy()
+   ↓                       → PositionManager.open(dcaConfig) → recordTrade()
 token_update → PositionManager.evaluatePrice()     → saveToDisk()
-   ↓ (if exit signal — TP tier, SL, trail, hold, bundle dump)
+   ↓ (if exit signal — TP tier, SL, trail, hold, bundle dump, sniper exit, KOL sell)
 executeExit() → TradingEngine.sell() → PositionManager.close() or reducePosition()
    ↓                                  → recordTrade()
    └── auto-withdraw (if configured) → WalletManager.transferSol()
+token_update (no exit) → evaluateDca() → buy more if price < entry
+trade (!is_buy, sniper) → handleTradeEvent() → sniper tracking → sniper exit
+kol_trade (!is_buy) → handleKolSellExit() → mirror exit
 ```
 
 ### Hooks
@@ -58,20 +66,20 @@ executeExit() → TradingEngine.sell() → PositionManager.close() or reducePosi
 |------|---------------|---------|
 | `src/index.ts` | `register(api)` | Entry point — parses config, registers tools, starts event forwarder |
 | `src/types.ts` | interfaces | All TypeScript types: config, wallet, trade, strategy, WS events, TradeRecord, WithdrawConfig, AlertFilter, PluginMetrics |
-| `src/tools.ts` | `registerTools()` | 7 analysis tools (REST API calls) |
-| `src/trading-tools.ts` | `registerTradingTools()` | 13 trading tools (wallet, buy/sell, strategies, withdraw, history, positions, health) |
+| `src/tools.ts` | `registerTools()` | 8 analysis tools (REST API calls) |
+| `src/trading-tools.ts` | `registerTradingTools()` | 14 trading tools (wallet, buy/sell, strategies, withdraw, history, positions, health, trade_analytics) |
 | `src/trading.ts` | `TradingEngine` | On-chain buy/sell: bonding curve + AMM auto-detect |
 | `src/strategy.ts` | `StrategyManager` | Entry trigger evaluation, per-strategy limits, strategy CRUD |
 | `src/positions.ts` | `PositionManager` | Exit rule monitoring (TP tiers, SL, trailing stop, max hold, bundle dump), disk persistence, trade history, PnL |
 | `src/wallet.ts` | `WalletManager` | Keypair generation, AES-256-GCM encryption, balance queries, SOL transfers |
-| `src/events.ts` | `EventForwarder` | WS connection, event batching, strategy execution, exit execution, low_risk eval, alert filtering, rate limiting, metrics, auto-withdraw |
+| `src/events.ts` | `EventForwarder` | WS connection, event batching, strategy execution, exit execution, low_risk eval, trade event handling, KOL confluence, KOL sell exit, sniper tracking, DCA, anti-rug, alert filtering, rate limiting, metrics, auto-withdraw |
 | `src/format.ts` | formatters | Event formatting + tool response formatting + trade history/positions/health formatters |
 
 ---
 
-## Tools — Complete Reference (20)
+## Tools — Complete Reference (22)
 
-### Analysis Tools (7) — `src/tools.ts`
+### Analysis Tools (8) — `src/tools.ts`
 
 | # | Tool | Parameters | API Endpoint | Returns |
 |---|------|-----------|-------------|---------|
@@ -82,8 +90,9 @@ executeExit() → TradingEngine.sell() → PositionManager.close() or reducePosi
 | 5 | `market_overview` | — | `GET /api/v1/market` | SOL price, active tokens, volume, mcap stats |
 | 6 | `assess_risk` | `mint` (string) | `GET /api/v1/risk/{mint}` | Risk score 0-100, recommendation, factor breakdown (dev, bundle, market) |
 | 7 | `discover_tokens` | `min_mcap?`, `max_mcap?`, `has_kol?`, `has_bundle?`, `sort?` ("mcap"\|"volume"\|"age"\|"bonding"), `limit?` (max 200) | `GET /api/v1/tokens?...` | Token list with symbol, mcap, volume, bonding %, mint |
+| 8 | `check_wallet` | `address` (string), `period?` ("1d"\|"7d"\|"30d"\|"all", default "7d") | `GET /api/v1/analytics/wallet/{address}/stats` + `/pnl` | Trade count, volume, tokens, labels, PnL, win rate, best/worst trades |
 
-### Trading Tools (13) — `src/trading-tools.ts`
+### Trading Tools (14) — `src/trading-tools.ts`
 
 | # | Tool | Parameters | What it does |
 |---|------|-----------|-------------|
@@ -92,14 +101,15 @@ executeExit() → TradingEngine.sell() → PositionManager.close() or reducePosi
 | 3 | `wallet_info` | — | SOL balance + all token holdings from RPC |
 | 4 | `buy_token` | `mint` (string), `sol_amount` (number), `slippage_bps?` (default 500) | Auto-detect bonding/AMM → buy on-chain. Hard limit: 10 SOL |
 | 5 | `sell_token` | `mint` (string), `percent?` (1-100), `token_amount?` (number), `slippage_bps?` (default 500) | Sell by % of holdings OR exact token amount. At least one required |
-| 6 | `set_strategy` | `name` (string), `rules` (JSON string) | Create/update strategy with TP tiers support. Saves to `{dataDir}/strategies.json` |
-| 7 | `list_strategies` | — | List all strategies with status, mode, trigger, limits, TP tiers |
+| 6 | `set_strategy` | `name` (string), `rules` (JSON string) | Create/update strategy. Parses all new fields: min_sol_amount, min_kol_count, confluence, risk_scaling, dca, sniper_exit, kol_sell_exit |
+| 7 | `list_strategies` | — | List all strategies with status, mode, trigger, limits, TP tiers, confluence, DCA, risk scaling, sniper/KOL exit |
 | 8 | `remove_strategy` | `name` (string) | Delete strategy by name |
 | 9 | `withdraw` | `destination` (string), `amount` (number) | Transfer SOL from trading wallet to any address |
 | 10 | `set_withdraw_config` | `config` (JSON string) | Configure auto-withdrawal: `{enabled, destination, mode, percent?, afterEveryTrade}` |
 | 11 | `trade_history` | `limit?` (number, default 20), `mint?` (string) | View trade records + realized PnL by mint |
 | 12 | `positions` | — | View all open positions with entry price, SOL spent, hold time, fired TP tiers |
 | 13 | `health` | — | Plugin health: WS connected, reconnects, events received, trades executed, API calls, open positions, daily SOL spent, uptime |
+| 14 | `trade_analytics` | `period?` ("1d"\|"7d"\|"30d"\|"all", default "all"), `strategy?` (string) | PnL, ROI, win rate, avg hold time, best/worst trade, by-strategy breakdown. Pure local computation |
 
 ---
 
@@ -158,24 +168,38 @@ interface Strategy {
   active: boolean;                              // default: true
   mode: "autonomous" | "confirm" | "alert";     // default: "alert"
   entry: {
-    trigger: "kol_buy" | "low_risk" | "new_token";
+    trigger: "kol_buy" | "low_risk" | "new_token" | "smart_money_buy" | "whale_buy";
     conditions: {
-      kol_names?: string[];      // case-insensitive match
-      max_risk_score?: number;   // for low_risk trigger
+      kol_names?: string[];      // case-insensitive match (kol_buy)
+      max_risk_score?: number;   // anti-rug: skip if risk > this (any trigger)
       min_mcap?: number;         // USD
       max_mcap?: number;         // USD
       sol_amount: number;        // SOL to buy
+      min_sol_amount?: number;   // min trade size to follow (smart_money/whale)
+      min_kol_count?: number;    // multi-KOL confluence (kol_buy, default 1)
+      confluence_window_seconds?: number;  // time window for confluence (default 300)
+      risk_scaling?: {           // scale position by risk score
+        low_pct: number;         // 0-20 risk → this % of sol_amount
+        medium_pct: number;      // 21-45 risk
+        high_pct: number;        // 46-70 risk
+      };
+      dca?: {                    // dollar cost averaging
+        max_buys: number;        // max additional buys
+        interval_seconds: number; // min seconds between DCA buys
+        scale_factor: number;    // multiply amount by this each DCA
+      };
     };
   };
   exit: {
     take_profit_pct?: number;    // e.g. 200 = +200% (final TP)
     take_profit_tiers?: { pct: number; sell_pct: number }[];
-    // e.g. [{pct:50, sell_pct:50}, {pct:100, sell_pct:50}]
-    // Tiers evaluated ASC before simple take_profit_pct
     stop_loss_pct?: number;      // e.g. 30 = -30%
     trailing_stop_pct?: number;  // e.g. 20 = -20% from peak
     bundle_dump?: boolean;       // exit on bundle_dump_alert event
     max_hold_minutes?: number;   // e.g. 120
+    sniper_exit?: { min_sellers: number };  // exit when N snipers sell
+    kol_sell_exit?: boolean;     // exit when KOL sells same token
+    kol_sell_exit_names?: string[];  // only exit for these KOLs
   };
   limits: {
     max_open_positions: number;  // per-strategy (not global)
@@ -189,7 +213,9 @@ interface Strategy {
 
 | Trigger | WS Event | How it works |
 |---------|---------|-------------|
-| `kol_buy` | `kol_trade` (is_buy=true) | Match kol_names (case-insensitive), check mcap filters, check per-strategy limits |
+| `kol_buy` | `kol_trade` (is_buy=true) | Match kol_names (case-insensitive), check mcap filters, per-strategy limits. If min_kol_count > 1 → deferred to confluence logic |
+| `smart_money_buy` | `trade` (is_buy=true, labels includes "smart_money") | Check min_sol_amount, mcap filters, per-strategy limits. Auto-subscribes `smart_money` WS channel |
+| `whale_buy` | `trade` (is_buy=true, labels includes "whale") | Same as smart_money_buy but for "whale" label. Auto-subscribes `whale_alerts` WS channel |
 | `new_token` | `token_new` | Check mcap filters, check per-strategy limits |
 | `low_risk` | `token_new` | On token_new → call `GET /api/v1/risk/{mint}` (rate-limited) → if risk_score <= max_risk_score → trigger buy |
 
@@ -213,14 +239,18 @@ Called on every `token_update` event for open positions.
 | **Trailing Stop** | Updates high water mark; `drawdown >= trailing_stop_pct` → sell 100% |
 | **Max Hold** | Checked every 10s via `evaluateAllTimers()`; `heldMinutes >= max_hold_minutes` → sell 100% |
 | **Bundle Dump** | On `bundle_dump_alert` WS event; if position has `bundle_dump: true` → sell 100% |
+| **Sniper Exit** | Tracks unique sniper wallets selling on this mint via `trade` events; if count >= `min_sellers` → sell 100% |
+| **KOL Sell Exit** | On `kol_trade` with `is_buy=false`; if position has `kol_sell_exit: true` and name matches (or no filter) → sell 100% |
 
 ### Position Lifecycle
 
 ```
-buy() success → PositionManager.open() → recordTrade() → saveToDisk()
+buy() success → PositionManager.open(dcaConfig, initialSolAmount) → recordTrade() → saveToDisk()
   ↓
 token_update → evaluatePrice(mint, currentPrice) → ExitSignal | null
-  ↓
+  ↓ (no exit)
+  └── evaluateDca(mint, price) → if price < entry & interval elapsed → buy more → recordDcaBuy()
+  ↓ (exit signal)
 ExitSignal(sellPercent=100) → executeExit() → sell() → close() → recordTrade()
 ExitSignal(sellPercent<100) → executeExit() → sell() → reducePosition() → recordTrade()
   ↓ (if auto-withdraw configured)
@@ -252,6 +282,10 @@ interface Position {
   highWaterMark: number;
   exitRules: Strategy["exit"];
   tpTiersFired: number[];      // indices of fired TP tiers
+  dcaBuyCount?: number;         // number of DCA buys executed
+  dcaConfig?: { max_buys: number; interval_seconds: number; scale_factor: number };
+  lastDcaAt?: number;           // timestamp of last DCA buy
+  initialSolAmount?: number;    // original buy amount (for DCA scaling)
 }
 ```
 
@@ -373,12 +407,13 @@ interface PluginMetrics {
 
 | Event | Channel | Priority | Handled by plugin |
 |-------|---------|----------|------------------|
-| `kol_trade` | `kol_trades` | normal | Strategy eval (kol_buy trigger) + alert |
+| `kol_trade` | `kol_trades` | normal | Strategy eval (kol_buy trigger) + KOL confluence + KOL sell exit + alert |
 | `bundle_detected` | `bundles` | normal | Alert only |
 | `bundle_dump_alert` | `bundles` | **high** (instant) | Position exit (if bundle_dump=true) + instant forward to `/hooks/agent` |
 | `token_new` | `tokens` | normal | Strategy eval (new_token + low_risk triggers) + alert |
-| `token_update` | `tokens` | normal | Position price monitoring (no alert) |
+| `token_update` | `tokens` | normal | Position price monitoring + DCA evaluation (no alert) |
 | `sol_price` | `market` | normal | Alert only |
+| `trade` | `trades` | normal | Strategy eval (smart_money_buy / whale_buy) + sniper sell tracking + sniper exit |
 
 ### Subscription
 
@@ -391,6 +426,8 @@ interface PluginMetrics {
 ```
 
 If `tradingEnabled`: `"tokens"` channel is always added (needed for position monitoring via `token_update`).
+If any active strategy uses `smart_money_buy` or `sniper_exit`: `"smart_money"` channel is auto-added.
+If any active strategy uses `whale_buy`: `"whale_alerts"` channel is auto-added.
 
 ### Batching
 
@@ -515,6 +552,8 @@ npx tsc --noEmit     # Type-check without emitting
 | `/api/v1/market` | `market_overview` | GET |
 | `/api/v1/risk/{mint}` | `assess_risk`, `low_risk` trigger | GET |
 | `/api/v1/tokens?...` | `discover_tokens` | GET |
+| `/api/v1/analytics/wallet/{address}/stats?period=` | `check_wallet` | GET |
+| `/api/v1/analytics/wallet/{address}/pnl?period=` | `check_wallet` | GET |
 
 All REST calls use header: `X-API-Key: {config.apiKey}`
 
